@@ -1,10 +1,19 @@
 package api
 
-import "net/http"
+import (
+	"log/slog"
+	"net/http"
 
-// NewRouter builds the HTTP router for the service.
-func NewRouter(h *Handlers) *http.ServeMux {
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+// NewRouter builds the HTTP router for the service, wrapped with structured
+// access logging and Prometheus request metrics.
+func NewRouter(h *Handlers, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /compare", h.Compare)
-	return mux
+	mux.HandleFunc("GET /health", h.Health)
+	mux.Handle("GET /metrics", promhttp.Handler())
+
+	return metricsMiddleware(loggingMiddleware(logger, mux))
 }

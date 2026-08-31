@@ -3,7 +3,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +17,8 @@ import (
 const defaultUserAgent = "song-similarity/0.1.0 ( https://example.com/song-similarity )"
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
 	userAgent := os.Getenv("MB_USER_AGENT")
 	if userAgent == "" {
 		userAgent = defaultUserAgent
@@ -24,7 +26,7 @@ func main() {
 
 	mbClient := provider.NewClient(userAgent)
 	handlers := api.NewHandlers(mbClient)
-	router := api.NewRouter(handlers)
+	router := api.NewRouter(handlers, logger)
 
 	srv := &http.Server{
 		Addr:              ":8080",
@@ -33,9 +35,10 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("song-similarity listening on %s", srv.Addr)
+		logger.Info("starting server", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			logger.Error("server error", "error", err.Error())
+			os.Exit(1)
 		}
 	}()
 
@@ -46,6 +49,6 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("graceful shutdown failed: %v", err)
+		logger.Error("graceful shutdown failed", "error", err.Error())
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"song-similarity/internal/provider"
@@ -65,6 +66,11 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	addLogAttr(r.Context(), slog.String("artist_a", req.SongA.Artist))
+	addLogAttr(r.Context(), slog.String("title_a", req.SongA.Title))
+	addLogAttr(r.Context(), slog.String("artist_b", req.SongB.Artist))
+	addLogAttr(r.Context(), slog.String("title_b", req.SongB.Title))
+
 	trackA, err := h.lookupTrack(r.Context(), req.SongA)
 	if err != nil {
 		writeError(w, statusFor(err), err.Error())
@@ -78,12 +84,22 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	score := similarity.CompareGenres(trackA.Tags, trackB.Tags)
+	addLogAttr(r.Context(), slog.Float64("genre_score", score))
 
 	writeJSON(w, http.StatusOK, compareResponse{
 		GenreScore: score,
 		TagsA:      trackA.Tags,
 		TagsB:      trackB.Tags,
 	})
+}
+
+type healthResponse struct {
+	Status string `json:"status"`
+}
+
+// Health handles GET /health.
+func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
 }
 
 var errNoTags = errors.New("no genre tags available")

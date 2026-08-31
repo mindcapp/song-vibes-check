@@ -1,0 +1,17 @@
+[Unit]
+Description=Song Similarity API
+After=network.target
+
+[Service]
+Type=simple
+User=app
+WorkingDirectory=/opt/song-similarity
+EnvironmentFile=/opt/song-similarity/.env
+ExecStart=/opt/song-similarity/app
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
