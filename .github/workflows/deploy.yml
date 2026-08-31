@@ -9,34 +9,31 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-
-      - name: Build binary
+      
+      - name: Build
         run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o song-similarity ./cmd/server
-
-      - name: Set up SSH
-        uses: shimataro/ssh-key-action@v2
-        with:
-          key: ${{ secrets.VPS_KEY }}
-          known_hosts: ${{ secrets.SSH_HOST }}
-
-      - name: Copy binary to VPS
-        run: scp -o StrictHostKeyChecking=no song-similarity ${{ secrets.VPS_USER }}@${{ secrets.SSH_HOST }}:/opt/song-similarity/app
-
-      - name: Restart service and verify health
+      
+      - name: Deploy
+        env:
+          DEPLOY_KEY: ${{ secrets.VPS_KEY }}
+          DEPLOY_HOST: ${{ secrets.SSH_HOST }}
+          DEPLOY_USER: ${{ secrets.SSH_USER }}
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.SSH_HOST }} << 'SCRIPT'
-          set -e
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null
+          scp -o ConnectTimeout=10 -o StrictHostKeyChecking=no song-similarity $DEPLOY_USER@$DEPLOY_HOST:/opt/song-similarity/app
+          ssh -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST << 'DEPLOY'
           sudo systemctl stop song-similarity || true
           sudo chmod +x /opt/song-similarity/app
           sudo systemctl start song-similarity
           sleep 2
           curl -sf http://127.0.0.1:8080/health || (sudo systemctl stop song-similarity && exit 1)
           echo "✓ Deploy successful"
-          SCRIPT
+          DEPLOY
