@@ -25,19 +25,20 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.VPS_KEY }}
 
-      - name: Trust VPS host key
-        run: ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Add VPS to known hosts
+        run: ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Copy binary to VPS
-        run: scp song-similarity "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/song-similarity/app"
+        run: scp -o ConnectTimeout=10 song-similarity ${{ secrets.VPS_USER }}@${{ secrets.SSH_HOST }}:/opt/song-similarity/app
 
       - name: Restart service and verify health
         run: |
-          ssh "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" '
-            set -e
-            sudo systemctl stop song-similarity || true
-            sudo chmod +x /opt/song-similarity/app
-            sudo systemctl start song-similarity
-            sleep 2
-            curl -sf http://127.0.0.1:8080/health || (sudo systemctl stop song-similarity && exit 1)
-          '
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.SSH_HOST }} << 'SCRIPT'
+          set -e
+          sudo systemctl stop song-similarity || true
+          sudo chmod +x /opt/song-similarity/app
+          sudo systemctl start song-similarity
+          sleep 2
+          curl -sf http://127.0.0.1:8080/health || (sudo systemctl stop song-similarity && exit 1)
+          echo "✓ Deploy successful"
+          SCRIPT
