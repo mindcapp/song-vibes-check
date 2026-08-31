@@ -20,19 +20,14 @@ jobs:
       - name: Build binary
         run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o song-similarity ./cmd/server
 
-      - name: Set up SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.VPS_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          eval "$(ssh-agent -s)"
-          ssh-add ~/.ssh/deploy_key
-
-      - name: Add VPS to known hosts
-        run: ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+      - name: Set up SSH
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.VPS_KEY }}
+          known_hosts: ${{ secrets.SSH_HOST }}
 
       - name: Copy binary to VPS
-        run: scp -o ConnectTimeout=10 -o StrictHostKeyChecking=no song-similarity ${{ secrets.VPS_USER }}@${{ secrets.SSH_HOST }}:/opt/song-similarity/app
+        run: scp -o StrictHostKeyChecking=no song-similarity ${{ secrets.VPS_USER }}@${{ secrets.SSH_HOST }}:/opt/song-similarity/app
 
       - name: Restart service and verify health
         run: |
