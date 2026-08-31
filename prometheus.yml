@@ -3,6 +3,6 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: song-similarity-api
+  - job_name: 'song-similarity'
     static_configs:
-      - targets: ["song-similarity-api:8080"]
+      - targets: ['130.17.27.203:8080']

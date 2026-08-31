@@ -1,53 +1,37 @@
-services:
-  song-similarity-api:
-    build: .
-    image: song-similarity:latest
-    container_name: song-similarity-api
-    ports:
-      - "8080:8080"
-    environment:
-      MB_USER_AGENT: "song-similarity/0.1.0 ( you@example.com )"
-    restart: unless-stopped
-    networks:
-      - monitoring
+version: '3.8'
 
+services:
   prometheus:
     image: prom/prometheus:latest
-    container_name: prometheus
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
     ports:
       - "9090:9090"
-    depends_on:
-      - song-similarity-api
-    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
     networks:
       - monitoring
 
   grafana:
     image: grafana/grafana:latest
-    container_name: grafana
     ports:
       - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-clock-panel
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    depends_on:
-      - prometheus
-    restart: unless-stopped
     networks:
       - monitoring
-
-networks:
-  monitoring:
-    driver: bridge
+    depends_on:
+      - prometheus
 
 volumes:
   prometheus_data:
   grafana_data:
+
+networks:
+  monitoring:
+    driver: bridge
