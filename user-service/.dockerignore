@@ -1,0 +1,5 @@
+.env
+.git
+tests/
+*.md
+cover.out
