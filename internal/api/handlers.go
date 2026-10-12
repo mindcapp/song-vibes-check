@@ -89,6 +89,9 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	addLogAttr(r.Context(), slog.String("cache_a", cacheStatus(trackA)))
+	addLogAttr(r.Context(), slog.String("cache_b", cacheStatus(trackB)))
+
 	result := similarity.Compare(h.profile(trackA), h.profile(trackB))
 	addLogAttr(r.Context(), slog.Float64("genre_score", result.GenreScore))
 	addLogAttr(r.Context(), slog.Float64("weighted_score", result.WeightedScore))
@@ -102,6 +105,13 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 		OnlyA:         result.OnlyA,
 		OnlyB:         result.OnlyB,
 	})
+}
+
+func cacheStatus(track *provider.Track) string {
+	if track.Cached {
+		return "hit"
+	}
+	return "miss"
 }
 
 // profile turns a track's raw tags into normalized tag -> vote count. Votes

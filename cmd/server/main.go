@@ -11,11 +11,16 @@ import (
 	"time"
 
 	"song-similarity/internal/api"
+	"song-similarity/internal/cache"
 	"song-similarity/internal/provider"
 	"song-similarity/internal/tags"
 )
 
-const defaultUserAgent = "song-similarity/0.1.0 ( https://example.com/song-similarity )"
+const (
+	defaultUserAgent        = "song-similarity/0.1.0 ( https://example.com/song-similarity )"
+	defaultCacheTTL         = 24 * time.Hour
+	defaultCacheNegativeTTL = 10 * time.Minute
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -31,8 +36,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	mbClient := provider.NewClient(userAgent)
-	handlers := api.NewHandlers(mbClient, normalizer)
+	searcher, closeCache := withCache(provider.NewClient(userAgent), logger)
+	defer closeCache()
+
+	handlers := api.NewHandlers(searcher, normalizer)
 	router := api.NewRouter(handlers, logger)
 
 	srv := &http.Server{
@@ -58,4 +65,58 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("graceful shutdown failed", "error", err.Error())
 	}
+}
+
+// withCache wraps the searcher with a Redis cache when REDIS_URL is set. Any
+// problem with the cache configuration or with Redis itself only disables or
+// degrades caching; it never stops the service from starting.
+func withCache(searcher api.TrackSearcher, logger *slog.Logger) (api.TrackSearcher, func()) {
+	noop := func() {}
+
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		logger.Info("cache disabled: REDIS_URL is not set")
+		return searcher, noop
+	}
+
+	store, err := cache.NewRedisStore(redisURL, logger)
+	if err != nil {
+		logger.Warn("cache disabled: invalid REDIS_URL", "error", err.Error())
+		return searcher, noop
+	}
+
+	cfg := cache.Config{
+		TTL:         durationEnv(logger, "CACHE_TTL", defaultCacheTTL),
+		NegativeTTL: durationEnv(logger, "CACHE_NEGATIVE_TTL", defaultCacheNegativeTTL),
+	}
+
+	pingCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := store.Ping(pingCtx); err != nil {
+		logger.Warn("redis is not reachable at startup, will keep retrying", "error", err.Error())
+	} else {
+		logger.Info("cache enabled", "ttl", cfg.TTL.String(), "negative_ttl", cfg.NegativeTTL.String())
+	}
+
+	closeStore := func() {
+		if err := store.Close(); err != nil {
+			logger.Warn("closing redis client failed", "error", err.Error())
+		}
+	}
+	return cache.NewSearcher(searcher, store, cfg, logger), closeStore
+}
+
+// durationEnv reads a Go duration ("24h", "90m") from the environment,
+// falling back to def when the variable is unset or not a positive duration.
+func durationEnv(logger *slog.Logger, name string, def time.Duration) time.Duration {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		logger.Warn("ignoring invalid duration, using default", "variable", name, "value", raw, "default", def.String())
+		return def
+	}
+	return d
 }

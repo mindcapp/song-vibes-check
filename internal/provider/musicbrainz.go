@@ -41,6 +41,9 @@ type Track struct {
 	Tags []string
 	// WeightedTags holds the same tags, in the same order, with vote counts.
 	WeightedTags []Tag
+	// Cached is true when the track was served from the cache rather than
+	// fetched from MusicBrainz.
+	Cached bool
 }
 
 // Client talks to the MusicBrainz API while respecting its 1 req/sec rate limit policy.
