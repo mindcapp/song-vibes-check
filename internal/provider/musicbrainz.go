@@ -155,7 +155,7 @@ func WithTimeout(timeout time.Duration) Option {
 
 // NewClient builds a MusicBrainz client. userAgent must follow MusicBrainz's
 // requirements (app name, version and contact info), e.g.
-// "song-similarity/0.1.0 ( contact@example.com )".
+// "song-vibes-check/0.2.0 ( https://github.com/mindcapp/song-vibes-check )".
 func NewClient(userAgent string, opts ...Option) *Client {
 	c := &Client{
 		httpClient:    &http.Client{Timeout: defaultTimeout},

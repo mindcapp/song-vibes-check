@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	defaultUserAgent        = "song-similarity/0.1.0 ( https://example.com/song-similarity )"
+	defaultUserAgent        = "song-vibes-check/0.2.0 ( https://github.com/mindcapp/song-vibes-check )"
 	defaultCacheTTL         = 24 * time.Hour
 	defaultCacheLowDataTTL  = time.Hour
 	defaultCacheArtistTTL   = 72 * time.Hour
