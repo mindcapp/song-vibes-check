@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -80,5 +82,29 @@ func metricsMiddleware(next http.Handler) http.Handler {
 
 		requestsTotal.WithLabelValues(r.Method, r.URL.Path, strconv.Itoa(rec.status)).Inc()
 		requestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(time.Since(start).Seconds())
+	})
+}
+
+// recoverMiddleware turns a panic in a handler into a logged 500 instead of
+// letting it kill the connection silently. The log line carries the stack.
+func recoverMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			if recovered == http.ErrAbortHandler {
+				panic(recovered) // net/http's own signal to abort the response
+			}
+
+			logger.Error("handler panicked",
+				"method", r.Method, "path", r.URL.Path,
+				"panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
+			addLogAttr(r.Context(), slog.String("error", "internal error: handler panicked"))
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}()
+
+		next.ServeHTTP(w, r)
 	})
 }

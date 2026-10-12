@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"song-similarity/internal/provider"
 	"song-similarity/internal/tags"
@@ -49,7 +50,7 @@ func newTestRouter(t *testing.T, searcher TrackSearcher) http.Handler {
 		t.Fatalf("load tags: %v", err)
 	}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return NewRouter(NewHandlers(searcher, normalizer), logger)
+	return NewRouter(NewHandlers(searcher, normalizer, testTimeout), logger)
 }
 
 func postCompare(t *testing.T, router http.Handler, body string) *httptest.ResponseRecorder {
@@ -59,6 +60,8 @@ func postCompare(t *testing.T, router http.Handler, body string) *httptest.Respo
 	router.ServeHTTP(rec, req)
 	return rec
 }
+
+const testTimeout = 5 * time.Second
 
 const compareBody = `{"song_a":{"artist":"A","title":"One"},"song_b":{"artist":"B","title":"Two"}}`
 
@@ -256,7 +259,7 @@ func TestCompareLogsErrorText(t *testing.T) {
 	}
 
 	var logs strings.Builder
-	router := NewRouter(NewHandlers(searcher, normalizer), slog.New(slog.NewJSONHandler(&logs, nil)))
+	router := NewRouter(NewHandlers(searcher, normalizer, testTimeout), slog.New(slog.NewJSONHandler(&logs, nil)))
 
 	rec := postCompare(t, router, compareBody)
 	if rec.Code != http.StatusBadGateway {

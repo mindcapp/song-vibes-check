@@ -7,7 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"song-similarity/internal/provider"
 	"song-similarity/internal/similarity"
@@ -22,11 +26,26 @@ type TrackSearcher interface {
 type Handlers struct {
 	searcher   TrackSearcher
 	normalizer *tags.Normalizer
+	timeout    time.Duration
 }
 
-func NewHandlers(searcher TrackSearcher, normalizer *tags.Normalizer) *Handlers {
-	return &Handlers{searcher: searcher, normalizer: normalizer}
+// NewHandlers builds the handlers. timeout bounds how long POST /compare may
+// spend looking both songs up before it gives up with a 502.
+func NewHandlers(searcher TrackSearcher, normalizer *tags.Normalizer, timeout time.Duration) *Handlers {
+	return &Handlers{searcher: searcher, normalizer: normalizer, timeout: timeout}
 }
+
+const (
+	// maxBodyBytes caps the request body; a valid request is a few hundred bytes.
+	maxBodyBytes = 64 << 10
+	// statusClientClosedRequest is logged (nginx's convention) when the client
+	// went away before the answer was ready. Nobody receives it.
+	statusClientClosedRequest = 499
+	// defaultRetryAfter is suggested to clients on a 502 when MusicBrainz did
+	// not name a delay itself; maxRetryAfter caps what is passed on.
+	defaultRetryAfter = time.Second
+	maxRetryAfter     = time.Minute
+)
 
 type songRequest struct {
 	Artist string `json:"artist"`
@@ -67,19 +86,24 @@ type errorResponse struct {
 }
 
 // Compare handles POST /compare.
+//
+// Errors: 400 for a malformed body or missing fields, 404 when a song is not
+// in MusicBrainz, 422 when it is there but has no usable tags, 502 (with
+// Retry-After) when MusicBrainz is unavailable or too slow.
 func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 	var req compareRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.fail(w, r, http.StatusBadRequest, "", errors.New("invalid JSON body"))
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
+		h.fail(w, r, &apiError{status: http.StatusBadRequest, message: "invalid JSON body", cause: err})
 		return
 	}
 
+	req.SongA, req.SongB = req.SongA.trimmed(), req.SongB.trimmed()
 	if req.SongA.Artist == "" || req.SongA.Title == "" {
-		h.fail(w, r, http.StatusBadRequest, "song_a", errors.New("song_a requires both artist and title"))
+		h.fail(w, r, &apiError{status: http.StatusBadRequest, song: "song_a", message: "song_a requires both artist and title"})
 		return
 	}
 	if req.SongB.Artist == "" || req.SongB.Title == "" {
-		h.fail(w, r, http.StatusBadRequest, "song_b", errors.New("song_b requires both artist and title"))
+		h.fail(w, r, &apiError{status: http.StatusBadRequest, song: "song_b", message: "song_b requires both artist and title"})
 		return
 	}
 
@@ -88,15 +112,17 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 	addLogAttr(r.Context(), slog.String("artist_b", req.SongB.Artist))
 	addLogAttr(r.Context(), slog.String("title_b", req.SongB.Title))
 
-	trackA, err := h.lookupTrack(r.Context(), req.SongA)
-	if err != nil {
-		h.fail(w, r, statusFor(err), "song_a", err)
+	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+	defer cancel()
+
+	trackA, profileA, apiErr := h.lookup(ctx, "song_a", req.SongA)
+	if apiErr != nil {
+		h.fail(w, r, apiErr)
 		return
 	}
-
-	trackB, err := h.lookupTrack(r.Context(), req.SongB)
-	if err != nil {
-		h.fail(w, r, statusFor(err), "song_b", err)
+	trackB, profileB, apiErr := h.lookup(ctx, "song_b", req.SongB)
+	if apiErr != nil {
+		h.fail(w, r, apiErr)
 		return
 	}
 
@@ -105,7 +131,6 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 	addLogAttr(r.Context(), slog.String("tags_from_a", trackA.TagSource))
 	addLogAttr(r.Context(), slog.String("tags_from_b", trackB.TagSource))
 
-	profileA, profileB := h.profile(trackA), h.profile(trackB)
 	result := similarity.Compare(profileA, profileB)
 	lowData := len(profileA) < lowDataTags || len(profileB) < lowDataTags
 
@@ -127,14 +152,96 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// fail answers with an error and records its text, and which song it was
-// about (if any), on the request's access-log line.
-func (h *Handlers) fail(w http.ResponseWriter, r *http.Request, status int, song string, err error) {
-	addLogAttr(r.Context(), slog.String("error", err.Error()))
-	if song != "" {
-		addLogAttr(r.Context(), slog.String("failed_song", song))
+// apiError is a failed request: what the client is told and what is logged.
+type apiError struct {
+	status  int
+	message string // sent to the client
+	song    string // "song_a" or "song_b", when the error is about one of them
+	// retryAfter, when positive, is sent as a Retry-After header.
+	retryAfter time.Duration
+	// cause is the underlying error; it is logged but not sent.
+	cause error
+}
+
+// fail answers with the error and records it on the request's access-log
+// line: the client-facing message, which song it was about, and the cause.
+func (h *Handlers) fail(w http.ResponseWriter, r *http.Request, e *apiError) {
+	text := e.message
+	if e.cause != nil {
+		text += ": " + e.cause.Error()
 	}
-	writeError(w, status, err.Error())
+	addLogAttr(r.Context(), slog.String("error", text))
+	if e.song != "" {
+		addLogAttr(r.Context(), slog.String("failed_song", e.song))
+	}
+
+	if e.retryAfter > 0 {
+		seconds := int(math.Ceil(e.retryAfter.Seconds()))
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	}
+	writeError(w, e.status, e.message)
+}
+
+// lookup finds one song and builds its tag profile.
+func (h *Handlers) lookup(ctx context.Context, field string, song songRequest) (*provider.Track, map[string]float64, *apiError) {
+	track, err := h.searcher.SearchTrack(ctx, song.Artist, song.Title)
+	if err != nil {
+		return nil, nil, lookupError(ctx, field, song, err)
+	}
+
+	profile := h.profile(track)
+	if len(profile) == 0 {
+		return nil, nil, &apiError{
+			status:  http.StatusUnprocessableEntity,
+			song:    field,
+			message: fmt.Sprintf("%q by %q was found but has no usable genre tags", song.Title, song.Artist),
+		}
+	}
+	return track, profile, nil
+}
+
+// lookupError maps a failed lookup to a response.
+func lookupError(ctx context.Context, field string, song songRequest, err error) *apiError {
+	what := fmt.Sprintf("%q by %q", song.Title, song.Artist)
+
+	switch {
+	case errors.Is(err, provider.ErrNotFound):
+		return &apiError{status: http.StatusNotFound, song: field, message: "track not found: " + what}
+
+	case errors.Is(err, context.Canceled) && ctx.Err() == context.Canceled:
+		// The client went away. Nobody reads this response; the status is for
+		// the access log and the metrics.
+		return &apiError{status: statusClientClosedRequest, song: field, message: "client closed the request", cause: err}
+
+	case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == context.DeadlineExceeded:
+		return &apiError{
+			status:     http.StatusBadGateway,
+			song:       field,
+			message:    "MusicBrainz did not answer in time for " + what,
+			retryAfter: defaultRetryAfter,
+			cause:      err,
+		}
+
+	default:
+		// Everything else a lookup can fail with is a problem talking to
+		// MusicBrainz: an error status, a network failure, a broken response.
+		retryAfter := defaultRetryAfter
+		var upstream *provider.UpstreamError
+		if errors.As(err, &upstream) && upstream.RetryAfter > 0 {
+			retryAfter = min(upstream.RetryAfter, maxRetryAfter)
+		}
+		return &apiError{
+			status:     http.StatusBadGateway,
+			song:       field,
+			message:    "MusicBrainz is unavailable, could not look up " + what,
+			retryAfter: retryAfter,
+			cause:      err,
+		}
+	}
+}
+
+func (s songRequest) trimmed() songRequest {
+	return songRequest{Artist: strings.TrimSpace(s.Artist), Title: strings.TrimSpace(s.Title)}
 }
 
 func cacheStatus(track *provider.Track) string {
@@ -181,33 +288,6 @@ type healthResponse struct {
 
 func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
-}
-
-var errNoTags = errors.New("no genre tags available")
-
-func (h *Handlers) lookupTrack(ctx context.Context, song songRequest) (*provider.Track, error) {
-	track, err := h.searcher.SearchTrack(ctx, song.Artist, song.Title)
-	if err != nil {
-		if errors.Is(err, provider.ErrNotFound) {
-			return nil, fmt.Errorf("%w: track not found for %q by %q", provider.ErrNotFound, song.Title, song.Artist)
-		}
-		return nil, fmt.Errorf("%w: lookup failed for %q by %q: %v", provider.ErrUpstream, song.Title, song.Artist, err)
-	}
-
-	if len(track.Tags) == 0 {
-		return nil, fmt.Errorf("%w: %q by %q", errNoTags, song.Title, song.Artist)
-	}
-
-	return track, nil
-}
-
-func statusFor(err error) int {
-	switch {
-	case errors.Is(err, provider.ErrNotFound), errors.Is(err, errNoTags), errors.Is(err, provider.ErrUpstream):
-		return http.StatusBadGateway
-	default:
-		return http.StatusInternalServerError
-	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
