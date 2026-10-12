@@ -7,7 +7,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - MB_USER_AGENT=${MB_USER_AGENT:-}
+      - MB_USER_AGENT=${MB_USER_AGENT:-song-vibes-check/0.2.0 ( https://github.com/mindcapp/song-vibes-check )}
       - REDIS_URL=redis://redis:6379/0
       - CACHE_TTL=${CACHE_TTL:-24h}
       - CACHE_LOW_DATA_TTL=${CACHE_LOW_DATA_TTL:-1h}
