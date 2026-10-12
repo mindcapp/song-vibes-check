@@ -186,3 +186,36 @@ func TestHealth(t *testing.T) {
 		t.Errorf("health = %d %s", rec.Code, rec.Body)
 	}
 }
+
+func TestCompareLogsErrorText(t *testing.T) {
+	searcher := &fakeSearcher{
+		tracks: map[string]*provider.Track{"A/One": track(provider.Tag{Name: "rock", Count: 1})},
+		errs:   map[string]error{"B/Two": provider.ErrUpstream},
+	}
+	normalizer, err := tags.Load("")
+	if err != nil {
+		t.Fatalf("load tags: %v", err)
+	}
+
+	var logs strings.Builder
+	router := NewRouter(NewHandlers(searcher, normalizer), slog.New(slog.NewJSONHandler(&logs, nil)))
+
+	rec := postCompare(t, router, compareBody)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+
+	var line map[string]any
+	if err := json.Unmarshal([]byte(logs.String()), &line); err != nil {
+		t.Fatalf("decode log line %q: %v", logs.String(), err)
+	}
+	if msg, _ := line["error"].(string); !strings.Contains(msg, "upstream error") {
+		t.Errorf("log error = %q, want the upstream error text", msg)
+	}
+	if line["failed_song"] != "song_b" {
+		t.Errorf("failed_song = %v, want song_b", line["failed_song"])
+	}
+	if line["cache_a"] != nil {
+		t.Errorf("cache_a logged on a failed request: %v", line["cache_a"])
+	}
+}
