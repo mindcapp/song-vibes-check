@@ -10,6 +10,7 @@ services:
       - MB_USER_AGENT=${MB_USER_AGENT:-}
       - REDIS_URL=redis://redis:6379/0
       - CACHE_TTL=${CACHE_TTL:-24h}
+      - CACHE_LOW_DATA_TTL=${CACHE_LOW_DATA_TTL:-1h}
       - CACHE_NEGATIVE_TTL=${CACHE_NEGATIVE_TTL:-10m}
     depends_on:
       - redis

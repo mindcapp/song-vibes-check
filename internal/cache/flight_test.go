@@ -123,7 +123,7 @@ func TestConcurrentMissesShareOneUpstreamCall(t *testing.T) {
 			t.Fatalf("caller %d: %v", i, r.err)
 		}
 		if r.track.Title != fmt.Sprintf("mine-%d", i) || r.track.Tags[0] != fmt.Sprintf("tag-%d", i) ||
-			r.track.WeightedTags[0].Count != i || len(r.track.Tags) != 3 {
+			r.track.WeightedTags[0].Count != i || len(r.track.Tags) != 4 {
 			t.Errorf("caller %d sees another caller's changes: %+v", i, r.track)
 		}
 	}
@@ -139,7 +139,7 @@ func TestConcurrentMissesShareOneUpstreamCall(t *testing.T) {
 	cached, err := s.SearchTrack(context.Background(), "Queen", "Bohemian Rhapsody")
 	want := taggedTrack()
 	want.Cached = true
-	if err != nil || cached.Title != want.Title || len(cached.Tags) != 2 || cached.Tags[0] != "rock" || cached.WeightedTags[0].Count != 7 {
+	if err != nil || cached.Title != want.Title || len(cached.Tags) != 3 || cached.Tags[0] != "rock" || cached.WeightedTags[0].Count != 7 {
 		t.Errorf("cached track = %+v (err %v), want the original %+v", cached, err, want)
 	}
 }

@@ -91,6 +91,8 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 
 	addLogAttr(r.Context(), slog.String("cache_a", cacheStatus(trackA)))
 	addLogAttr(r.Context(), slog.String("cache_b", cacheStatus(trackB)))
+	addLogAttr(r.Context(), slog.String("tags_from_a", trackA.TagSource))
+	addLogAttr(r.Context(), slog.String("tags_from_b", trackB.TagSource))
 
 	result := similarity.Compare(h.profile(trackA), h.profile(trackB))
 	addLogAttr(r.Context(), slog.Float64("genre_score", result.GenreScore))
