@@ -143,3 +143,26 @@ func TestWeightedJaccardIsSymmetricAndBounded(t *testing.T) {
 		t.Errorf("score = %v, want strictly between 0 and 1", ab)
 	}
 }
+
+// TestWeightedScoreDoesNotDependOnMapOrder runs the same comparison many times:
+// map iteration order is random per run, so a score computed by summing in
+// that order would differ in its last digits between runs.
+func TestWeightedScoreDoesNotDependOnMapOrder(t *testing.T) {
+	a := map[string]float64{}
+	b := map[string]float64{}
+	for i := 0; i < 40; i++ {
+		name := string(rune('a'+i%26)) + string(rune('a'+i/26))
+		a[name] = 1.0 / float64(i+3)
+		if i%3 != 0 {
+			b[name] = 0.5 / float64(i+7)
+		}
+	}
+
+	first := Compare(a, b)
+	for i := 0; i < 200; i++ {
+		got := Compare(a, b)
+		if got.WeightedScore != first.WeightedScore || got.GenreScore != first.GenreScore {
+			t.Fatalf("run %d: scores %v/%v differ from %v/%v", i, got.GenreScore, got.WeightedScore, first.GenreScore, first.WeightedScore)
+		}
+	}
+}
