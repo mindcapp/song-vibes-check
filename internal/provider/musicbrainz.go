@@ -46,6 +46,18 @@ type Track struct {
 	Cached bool
 }
 
+// Clone returns a deep copy of the track, safe to modify independently of the
+// original. It returns nil for a nil track.
+func (t *Track) Clone() *Track {
+	if t == nil {
+		return nil
+	}
+	clone := *t
+	clone.Tags = append([]string(nil), t.Tags...)
+	clone.WeightedTags = append([]Tag(nil), t.WeightedTags...)
+	return &clone
+}
+
 // Client talks to the MusicBrainz API while respecting its 1 req/sec rate limit policy.
 type Client struct {
 	httpClient *http.Client
