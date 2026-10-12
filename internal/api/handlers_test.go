@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"song-similarity/internal/provider"
-	"song-similarity/internal/tags"
+	"github.com/mindcapp/song-vibes-check/internal/provider"
+	"github.com/mindcapp/song-vibes-check/internal/tags"
 )
 
 type fakeSearcher struct {

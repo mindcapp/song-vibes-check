@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"song-similarity/internal/provider"
+	"github.com/mindcapp/song-vibes-check/internal/provider"
 )
 
 const artistKeyPrefix = "artist:v1:"

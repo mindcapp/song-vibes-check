@@ -1,4 +1,4 @@
-// Command server starts the song-similarity HTTP API on :8080.
+// Command server starts the song-vibes-check HTTP API on :8080.
 package main
 
 import (
@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"song-similarity/internal/api"
-	"song-similarity/internal/cache"
-	"song-similarity/internal/provider"
-	"song-similarity/internal/tags"
+	"github.com/mindcapp/song-vibes-check/internal/api"
+	"github.com/mindcapp/song-vibes-check/internal/cache"
+	"github.com/mindcapp/song-vibes-check/internal/provider"
+	"github.com/mindcapp/song-vibes-check/internal/tags"
 )
 
 const (

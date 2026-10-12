@@ -1,4 +1,4 @@
-module song-similarity
+module github.com/mindcapp/song-vibes-check
 
 go 1.26.0
 

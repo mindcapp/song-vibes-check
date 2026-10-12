@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"song-similarity/internal/provider"
+	"github.com/mindcapp/song-vibes-check/internal/provider"
 )
 
 // trackKeyPrefix carries a version that is bumped whenever the meaning of a

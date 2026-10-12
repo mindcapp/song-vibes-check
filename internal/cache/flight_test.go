@@ -13,7 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"song-similarity/internal/provider"
+	"github.com/mindcapp/song-vibes-check/internal/provider"
 )
 
 // gatedSearcher blocks every call until release is closed or the call's
