@@ -37,3 +37,4 @@ jobs:
           curl -sf http://127.0.0.1:8080/health || (sudo systemctl stop song-similarity && exit 1)
           echo "✓ Deploy successful"
           DEPLOY
+

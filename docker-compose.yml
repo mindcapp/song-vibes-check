@@ -1,6 +1,36 @@
 version: '3.8'
 
 services:
+  user-service-db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=user_service
+      - POSTGRES_PASSWORD=user_service
+      - POSTGRES_DB=user_service
+    volumes:
+      - user_service_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_service"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - default
+
+  user-service:
+    build:
+      context: ./user-service
+    ports:
+      - "8002:8002"
+    environment:
+      - SECRET_KEY=${USER_SERVICE_SECRET_KEY:-change-me-to-a-long-random-string}
+      - DATABASE_URL=postgres://user_service:user_service@user-service-db:5432/user_service?sslmode=disable
+    depends_on:
+      user-service-db:
+        condition: service_healthy
+    networks:
+      - default
+
   prometheus:
     image: prom/prometheus:latest
     ports:
@@ -31,6 +61,7 @@ services:
 volumes:
   prometheus_data:
   grafana_data:
+  user_service_db_data:
 
 networks:
   monitoring:
