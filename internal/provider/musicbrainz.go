@@ -234,7 +234,7 @@ func (c *Client) ArtistTags(ctx context.Context, artistID string) ([]Tag, error)
 	}.Encode()
 
 	var parsed artistResponse
-	if err := c.getJSON(ctx, u, &parsed); err != nil {
+	if err := c.getJSON(ctx, endpointArtist, u, &parsed); err != nil {
 		if errors.Is(err, errNoSuchEntity) {
 			return nil, nil
 		}
@@ -260,7 +260,7 @@ func (c *Client) search(ctx context.Context, artist, title string, taggedOnly bo
 	}.Encode()
 
 	var parsed searchResponse
-	if err := c.getJSON(ctx, u, &parsed); err != nil {
+	if err := c.getJSON(ctx, endpointSearch, u, &parsed); err != nil {
 		if errors.Is(err, errNoSuchEntity) {
 			return nil, &UpstreamError{Status: http.StatusNotFound}
 		}
@@ -271,10 +271,11 @@ func (c *Client) search(ctx context.Context, artist, title string, taggedOnly bo
 
 // getJSON performs a GET and decodes the JSON response. A 503 or a network
 // error is retried once; nothing else is.
-func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
-	err := c.attempt(ctx, reqURL, out)
+func (c *Client) getJSON(ctx context.Context, endpoint, reqURL string, out any) error {
+	err := c.attempt(ctx, endpoint, reqURL, out)
 	if retryable(ctx, err) {
-		err = c.attempt(ctx, reqURL, out)
+		retriesTotal.WithLabelValues(endpoint).Inc()
+		err = c.attempt(ctx, endpoint, reqURL, out)
 	}
 	return err
 }
@@ -293,12 +294,23 @@ func retryable(ctx context.Context, err error) bool {
 // attempt makes one rate-limited request. The limiter slot is held until the
 // response has been read, so the pause before the next request is measured
 // from the end of this one.
-func (c *Client) attempt(ctx context.Context, reqURL string, out any) error {
+func (c *Client) attempt(ctx context.Context, endpoint, reqURL string, out any) (err error) {
 	if err := c.limiter.acquire(ctx); err != nil {
 		return err
 	}
 	var backoff time.Duration
 	defer func() { c.limiter.release(backoff) }()
+
+	// Timed from here so the histogram shows MusicBrainz's own latency, not
+	// the queue in front of the rate limiter. A 404 on a lookup is an answer,
+	// not a failure.
+	start := time.Now()
+	defer func() {
+		requestDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
+		if err != nil && !errors.Is(err, errNoSuchEntity) {
+			errorsTotal.WithLabelValues(endpoint, errorReason(err)).Inc()
+		}
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {

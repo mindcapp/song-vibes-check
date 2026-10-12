@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"song-similarity/internal/provider"
@@ -117,5 +118,23 @@ func TestArtistTagsDegradeWhenStoreFails(t *testing.T) {
 func TestTrackAndArtistKeysDoNotCollide(t *testing.T) {
 	if Key("artist-1", "") == ArtistKey("artist-1") {
 		t.Error("track and artist keys collide")
+	}
+}
+
+// TestCounterSeriesExistBeforeFirstUse checks that building a cache creates
+// all of its counter series at zero. Dashboards divide these counters by one
+// another, and a ratio is empty for as long as any term has no series.
+func TestCounterSeriesExistBeforeFirstUse(t *testing.T) {
+	NewSearcher(&countingSearcher{}, newMemStore(), testConfig, quietLogger())
+	NewArtistTags(&countingTagger{}, newMemStore(), artistTestConfig, quietLogger())
+
+	for name, counter := range map[string]*prometheus.CounterVec{
+		"cache_hits_total": hitsTotal, "cache_misses_total": missesTotal,
+		"cache_coalesced_total": coalescedTotal, "cache_errors_total": errorsTotal,
+	} {
+		// Both caches, so two series per counter.
+		if got := testutil.CollectAndCount(counter); got != 2 {
+			t.Errorf("%s has %d series, want 2 (track and artist)", name, got)
+		}
 	}
 }

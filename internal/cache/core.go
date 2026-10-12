@@ -108,6 +108,13 @@ type core struct {
 
 func (c *core) init(kind string, store Store, cfg Config, logger *slog.Logger) {
 	c.kind, c.store, c.cfg, c.logger, c.now = kind, store, cfg.withDefaults(), logger, time.Now
+
+	// Create every series at zero. A counter that has never been incremented
+	// is otherwise absent, and an expression such as
+	// hits / (hits + misses + coalesced) is empty while any term is absent.
+	for _, counter := range []*prometheus.CounterVec{hitsTotal, missesTotal, coalescedTotal, errorsTotal} {
+		counter.WithLabelValues(kind)
+	}
 }
 
 // get returns the cached value for key; found is false on a miss, on a store
