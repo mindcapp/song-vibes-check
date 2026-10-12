@@ -42,7 +42,9 @@ type compareRequest struct {
 // tags exactly as MusicBrainz spells them; the scores and the shared/only
 // lists are computed from the normalized tags (synonyms merged, stop-listed
 // tags dropped). tag_source_a and tag_source_b say where each song's tags came
-// from: "recording", "artist" or "mixed".
+// from: "recording", "artist" or "mixed". low_data is true when either song
+// ends up with fewer than lowDataTags normalized tags, i.e. the scores rest on
+// too little to be trusted.
 type compareResponse struct {
 	GenreScore    float64  `json:"genre_score"`
 	WeightedScore float64  `json:"weighted_score"`
@@ -53,7 +55,12 @@ type compareResponse struct {
 	OnlyB         []string `json:"only_b"`
 	TagSourceA    string   `json:"tag_source_a"`
 	TagSourceB    string   `json:"tag_source_b"`
+	LowData       bool     `json:"low_data"`
 }
+
+// lowDataTags is the number of normalized tags a song needs for its side of
+// the comparison to be considered well founded.
+const lowDataTags = 3
 
 type errorResponse struct {
 	Error string `json:"error"`
@@ -98,9 +105,13 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 	addLogAttr(r.Context(), slog.String("tags_from_a", trackA.TagSource))
 	addLogAttr(r.Context(), slog.String("tags_from_b", trackB.TagSource))
 
-	result := similarity.Compare(h.profile(trackA), h.profile(trackB))
+	profileA, profileB := h.profile(trackA), h.profile(trackB)
+	result := similarity.Compare(profileA, profileB)
+	lowData := len(profileA) < lowDataTags || len(profileB) < lowDataTags
+
 	addLogAttr(r.Context(), slog.Float64("genre_score", result.GenreScore))
 	addLogAttr(r.Context(), slog.Float64("weighted_score", result.WeightedScore))
+	addLogAttr(r.Context(), slog.Bool("low_data", lowData))
 
 	writeJSON(w, http.StatusOK, compareResponse{
 		GenreScore:    result.GenreScore,
@@ -112,6 +123,7 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 		OnlyB:         result.OnlyB,
 		TagSourceA:    trackA.TagSource,
 		TagSourceB:    trackB.TagSource,
+		LowData:       lowData,
 	})
 }
 

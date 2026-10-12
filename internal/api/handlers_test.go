@@ -277,3 +277,60 @@ func TestCompareLogsErrorText(t *testing.T) {
 		t.Errorf("cache_a logged on a failed request: %v", line["cache_a"])
 	}
 }
+
+func TestCompareLowData(t *testing.T) {
+	tags := func(names ...string) *provider.Track {
+		var list []provider.Tag
+		for _, name := range names {
+			list = append(list, provider.Tag{Name: name, Count: 1})
+		}
+		return track(list...)
+	}
+
+	tests := []struct {
+		name string
+		a, b *provider.Track
+		want bool
+	}{
+		{name: "three tags each", a: tags("rock", "pop", "jazz"), b: tags("rock", "blues", "folk"), want: false},
+		{name: "two tags on side a", a: tags("rock", "pop"), b: tags("rock", "blues", "folk"), want: true},
+		{name: "two tags on side b", a: tags("rock", "pop", "jazz"), b: tags("rock", "blues"), want: true},
+		{
+			// Three raw tags, but only two survive: the synonyms merge and the stop list bites.
+			name: "counted after normalization",
+			a:    tags("hip hop", "hip-hop", "seen live", "rap"),
+			b:    tags("rock", "blues", "folk"),
+			want: true,
+		},
+		{
+			name: "artist tags count towards the total",
+			a: &provider.Track{
+				Tags:          []string{"rock", "pop", "jazz"},
+				RecordingTags: []provider.Tag{{Name: "rock", Count: 1}},
+				ArtistTags:    []provider.Tag{{Name: "pop", Count: 1}, {Name: "jazz", Count: 1}},
+				TagSource:     provider.TagSourceMixed,
+			},
+			b:    tags("rock", "blues", "folk"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			searcher := &fakeSearcher{tracks: map[string]*provider.Track{"A/One": tt.a, "B/Two": tt.b}}
+
+			rec := postCompare(t, newTestRouter(t, searcher), compareBody)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if want := map[bool]string{true: "true", false: "false"}[tt.want]; string(got["low_data"]) != want {
+				t.Errorf("low_data = %s, want %s", got["low_data"], want)
+			}
+		})
+	}
+}
