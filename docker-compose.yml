@@ -35,7 +35,10 @@ services:
     image: postgres:16-alpine
     environment:
       - POSTGRES_USER=user_service
-      - POSTGRES_PASSWORD=user_service
+      # The default password is for local development only. Set
+      # POSTGRES_PASSWORD for anything reachable by others. The database port
+      # is not published: only containers on this network can connect.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-user_service}
       - POSTGRES_DB=user_service
     volumes:
       - user_service_db_data:/var/lib/postgresql/data
@@ -53,8 +56,18 @@ services:
     ports:
       - "8002:8002"
     environment:
-      - SECRET_KEY=${USER_SERVICE_SECRET_KEY:-change-me-to-a-long-random-string}
-      - DATABASE_URL=postgres://user_service:user_service@user-service-db:5432/user_service?sslmode=disable
+      # No default on purpose: user-service refuses to start without a key of
+      # at least 32 characters. Generate one with:
+      #   export USER_SERVICE_SECRET_KEY=$(openssl rand -hex 32)
+      - SECRET_KEY=${USER_SERVICE_SECRET_KEY:-}
+      # Connection parameters are passed separately rather than as a URL so
+      # that a password with special characters needs no escaping.
+      - DB_HOST=user-service-db
+      - DB_PORT=5432
+      - DB_USER=user_service
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-user_service}
+      - DB_NAME=user_service
+      - DB_SSLMODE=disable
     depends_on:
       user-service-db:
         condition: service_healthy
@@ -64,7 +77,8 @@ services:
   prometheus:
     image: prom/prometheus:latest
     ports:
-      - "9090:9090"
+      # Bound to loopback: Prometheus has no authentication.
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -77,9 +91,15 @@ services:
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3000:3000"
+      # Bound to loopback; put a reverse proxy in front to expose it.
+      - "127.0.0.1:3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # The default password is for local development only. Set
+      # GF_ADMIN_PASSWORD for anything reachable by others. It is applied when
+      # the grafana_data volume is first created; later changes need
+      # `grafana cli admin reset-admin-password` or a fresh volume.
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
       - GF_INSTALL_PLUGINS=grafana-clock-panel
     volumes:
       - grafana_data:/var/lib/grafana

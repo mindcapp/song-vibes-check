@@ -43,8 +43,8 @@ docker compose up --build
 Поднимет три сервиса в одной сети:
 
 - **API** — http://localhost:8080/compare
-- **Prometheus** — http://localhost:9090 (скрейпит API каждые 15s, данные хранятся в volume `prometheus_data`, переживают перезапуск)
-- **Grafana** — http://localhost:3000 (логин `admin` / `admin`, задаётся `GF_SECURITY_ADMIN_PASSWORD` в docker-compose.yml). Datasource на Prometheus прописан автоматически через `grafana/provisioning/datasources/prometheus.yml` — ничего настраивать руками не нужно, дашборды можно строить сразу.
+- **Prometheus** — http://localhost:9090, порт привязан к `127.0.0.1` (скрейпит API каждые 15s, данные хранятся в volume `prometheus_data`, переживают перезапуск)
+- **Grafana** — http://localhost:3000, логин `admin`. Пароль берётся из переменной `GF_ADMIN_PASSWORD`; если она не задана, используется `admin` — только для локальной разработки. Порт привязан к `127.0.0.1`, регистрация новых пользователей отключена. Datasource на Prometheus прописан автоматически через `grafana/provisioning/datasources/prometheus.yml` — ничего настраивать руками не нужно, дашборды можно строить сразу.
 
 Пример запроса:
 
