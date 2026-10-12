@@ -13,8 +13,6 @@ import (
 	"song-similarity/internal/similarity"
 )
 
-// TrackSearcher is the dependency handlers need from a metadata provider.
-// It is satisfied by *provider.Client.
 type TrackSearcher interface {
 	SearchTrack(ctx context.Context, artist, title string) (*provider.Track, error)
 }
@@ -24,7 +22,6 @@ type Handlers struct {
 	searcher TrackSearcher
 }
 
-// NewHandlers builds a Handlers using the given track searcher.
 func NewHandlers(searcher TrackSearcher) *Handlers {
 	return &Handlers{searcher: searcher}
 }
@@ -97,7 +94,6 @@ type healthResponse struct {
 	Status string `json:"status"`
 }
 
-// Health handles GET /health.
 func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
 }
