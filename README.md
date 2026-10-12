@@ -41,8 +41,11 @@ curl -s -X POST localhost:8080/compare \
 |---|---|
 | http://localhost:8080 | api |
 | http://localhost:8002 | user-service |
-| http://localhost:9090 | Prometheus, только с этой машины (`127.0.0.1`) |
-| http://localhost:3000 | Grafana, только с этой машины (`127.0.0.1`) |
+| http://localhost:8001 | mood-service (только с профилем `mood`) |
+| http://localhost:9090 | Prometheus |
+| http://localhost:3000 | Grafana |
+
+Все порты привязаны к `127.0.0.1` и доступны только с этой машины. Чтобы открыть сервис наружу, поставьте перед ним reverse proxy (пример для api — [deploy/nginx.conf](deploy/nginx.conf)).
 
 - **Grafana**: логин `admin`. Пароль берётся из `GF_ADMIN_PASSWORD`; если переменная не задана, используется `admin` — только для локальной разработки. Регистрация пользователей отключена. Datasource и дашборд `song-vibes-check` подключаются автоматически.
 - **Redis и PostgreSQL** наружу не публикуются, к ним ходят только контейнеры.
