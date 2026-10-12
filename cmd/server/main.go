@@ -21,7 +21,7 @@ const (
 	defaultCacheTTL         = 24 * time.Hour
 	defaultCacheLowDataTTL  = time.Hour
 	defaultCacheArtistTTL   = 72 * time.Hour
-	defaultRequestTimeout   = 20 * time.Second
+	defaultRequestTimeout   = 30 * time.Second
 	defaultCacheNegativeTTL = 10 * time.Minute
 )
 
