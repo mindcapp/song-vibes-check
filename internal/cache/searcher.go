@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -31,7 +32,11 @@ var (
 	})
 	missesTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "cache_misses_total",
-		Help: "Track lookups that had to go to MusicBrainz.",
+		Help: "Track lookups that were not cached and started an upstream lookup.",
+	})
+	coalescedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "cache_coalesced_total",
+		Help: "Track lookups that were not cached and joined an upstream lookup already in progress.",
 	})
 	errorsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "cache_errors_total",
@@ -63,15 +68,20 @@ type Config struct {
 
 // Searcher wraps a TrackSearcher with a read-through cache. Store failures
 // never fail a lookup: they are logged, counted and the lookup falls through
-// to the wrapped searcher.
+// to the wrapped searcher. Concurrent misses for the same track share a single
+// upstream lookup, and every caller gets its own copy of the track. A Searcher
+// is safe for concurrent use.
 type Searcher struct {
-	next   TrackSearcher
-	store  Store
-	cfg    Config
-	logger *slog.Logger
-	now    func() time.Time
+	next    TrackSearcher
+	store   Store
+	cfg     Config
+	logger  *slog.Logger
+	now     func() time.Time
+	flights flightGroup
 
 	// bypassUntil is a unix-nano timestamp; zero means the cache is healthy.
+	// It is the only mutable state besides flights and is only touched
+	// through atomic operations.
 	bypassUntil atomic.Int64
 }
 
@@ -83,7 +93,19 @@ func NewSearcher(next TrackSearcher, store Store, cfg Config, logger *slog.Logge
 	if cfg.OpTimeout <= 0 {
 		cfg.OpTimeout = DefaultOpTimeout
 	}
-	return &Searcher{next: next, store: store, cfg: cfg, logger: logger, now: time.Now}
+	s := &Searcher{next: next, store: store, cfg: cfg, logger: logger, now: time.Now}
+	s.flights.joined = func(leader bool) {
+		if leader {
+			missesTotal.Inc()
+		} else {
+			coalescedTotal.Inc()
+		}
+	}
+	s.flights.onPanic = func(key string, recovered any, stack []byte) {
+		logger.Error("track lookup panicked",
+			"key", key, "panic", fmt.Sprint(recovered), "stack", string(stack))
+	}
+	return s
 }
 
 type entry struct {
@@ -113,20 +135,26 @@ func (s *Searcher) SearchTrack(ctx context.Context, artist, title string) (*prov
 		hitsTotal.Inc()
 		return track, err
 	}
-	missesTotal.Inc()
 
-	track, err := s.next.SearchTrack(ctx, artist, title)
-	switch {
-	case err == nil:
-		ttl := s.cfg.TTL
-		if len(track.Tags) == 0 {
-			ttl = s.cfg.NegativeTTL
+	return s.flights.do(ctx, key, func(flightCtx context.Context) (*provider.Track, error) {
+		// flightCtx has no deadline on purpose. The upstream client queues
+		// behind its rate limiter, so a burst of different tracks can wait
+		// many seconds for a slot; a deadline here would fail the tail of
+		// that queue. The HTTP call itself is bounded by the client's own
+		// timeout, and the lookup is cancelled once nobody waits for it.
+		track, err := s.next.SearchTrack(flightCtx, artist, title)
+		switch {
+		case err == nil:
+			ttl := s.cfg.TTL
+			if len(track.Tags) == 0 {
+				ttl = s.cfg.NegativeTTL
+			}
+			s.save(flightCtx, key, entry{Found: true, Track: toEntry(track)}, ttl)
+		case errors.Is(err, provider.ErrNotFound):
+			s.save(flightCtx, key, entry{Found: false}, s.cfg.NegativeTTL)
 		}
-		s.save(ctx, key, entry{Found: true, Track: toEntry(track)}, ttl)
-	case errors.Is(err, provider.ErrNotFound):
-		s.save(ctx, key, entry{Found: false}, s.cfg.NegativeTTL)
-	}
-	return track, err
+		return track, err
+	})
 }
 
 // Key builds the cache key for a lookup: artist and title are trimmed,
@@ -179,15 +207,11 @@ func (s *Searcher) save(ctx context.Context, key string, e entry, ttl time.Durat
 		return
 	}
 
-	// The caller's context may already be cancelled (client went away) while
-	// the result is still worth keeping, so the write is detached from it and
-	// bounded only by the per-operation deadline.
-	writeCtx := context.WithoutCancel(ctx)
-	opCtx, cancel := context.WithTimeout(writeCtx, s.cfg.OpTimeout)
+	opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
 	defer cancel()
 
 	if err := s.store.Set(opCtx, key, raw, ttl); err != nil {
-		s.fail(writeCtx, "set", err)
+		s.fail(ctx, "set", err)
 	}
 }
 
