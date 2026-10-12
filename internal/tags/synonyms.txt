@@ -1,0 +1,23 @@
+# Tag synonyms. Format: canonical: variant, variant, ...
+# Matching is done after basic cleanup: lower-case, trimmed, hyphens and
+# underscores turned into spaces, repeated spaces collapsed. That cleanup
+# already merges "hip-hop" with "hip hop", so only list variants it cannot
+# reach (glued spellings, abbreviations, "&" vs "and").
+
+hip hop: hiphop, hip hop music, hip hop/rap, rap/hip hop
+r&b: rnb, r & b, r and b, r n b, rhythm and blues, rhythm & blues
+rock and roll: rock & roll, rock n roll, rock 'n' roll, rock'n'roll, rock n' roll, rocknroll
+drum and bass: drum & bass, drum n bass, drum 'n' bass, drum'n'bass, dnb, d&b
+electronic: electronica, electronic music
+synth pop: synthpop
+k pop: kpop
+j pop: jpop
+lo fi: lofi
+post punk: postpunk
+pop punk: poppunk
+hard rock: hardrock
+heavy metal: heavymetal
+nu metal: numetal, nü metal
+trip hop: triphop
+alternative rock: alt rock, alt. rock, altrock
+singer songwriter: singer/songwriter, singer and songwriter
