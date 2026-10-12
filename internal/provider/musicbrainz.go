@@ -25,12 +25,22 @@ var ErrNotFound = errors.New("musicbrainz: track not found")
 // ErrUpstream is returned when MusicBrainz responds with a non-2xx status.
 var ErrUpstream = errors.New("musicbrainz: upstream error")
 
+// Tag is a folksonomy tag or genre together with the number of user votes
+// MusicBrainz reports for it.
+type Tag struct {
+	Name  string
+	Count int
+}
+
 // Track is the subset of MusicBrainz recording data the rest of the service needs.
 type Track struct {
 	ID     string
 	Title  string
 	Artist string
-	Tags   []string
+	// Tags holds lower-cased, de-duplicated tag and genre names.
+	Tags []string
+	// WeightedTags holds the same tags, in the same order, with vote counts.
+	WeightedTags []Tag
 }
 
 // Client talks to the MusicBrainz API while respecting its 1 req/sec rate limit policy.
@@ -118,11 +128,14 @@ func (c *Client) SearchTrack(ctx context.Context, artist, title string) (*Track,
 		resolvedArtist = rec.ArtistCredit[0].Name
 	}
 
+	weighted := mergeTags(rec.Tags, rec.Genres)
+
 	return &Track{
-		ID:     rec.ID,
-		Title:  rec.Title,
-		Artist: resolvedArtist,
-		Tags:   mergeTagNames(rec.Tags, rec.Genres),
+		ID:           rec.ID,
+		Title:        rec.Title,
+		Artist:       resolvedArtist,
+		Tags:         tagNames(weighted),
+		WeightedTags: weighted,
 	}, nil
 }
 
@@ -164,23 +177,40 @@ func escapeLucene(s string) string {
 	return replacer.Replace(s)
 }
 
-func mergeTagNames(groups ...[]tagEntry) []string {
-	seen := make(map[string]struct{})
-	var tags []string
+// mergeTags flattens the tag and genre lists into one. MusicBrainz repeats
+// every genre in the tag list with the same vote count, so duplicates keep the
+// highest count instead of being summed.
+func mergeTags(groups ...[]tagEntry) []Tag {
+	index := make(map[string]int)
+	var tags []Tag
 	for _, group := range groups {
 		for _, t := range group {
 			name := strings.ToLower(strings.TrimSpace(t.Name))
 			if name == "" {
 				continue
 			}
-			if _, ok := seen[name]; ok {
+			if i, ok := index[name]; ok {
+				if t.Count > tags[i].Count {
+					tags[i].Count = t.Count
+				}
 				continue
 			}
-			seen[name] = struct{}{}
-			tags = append(tags, name)
+			index[name] = len(tags)
+			tags = append(tags, Tag{Name: name, Count: t.Count})
 		}
 	}
 	return tags
+}
+
+func tagNames(tags []Tag) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	names := make([]string, len(tags))
+	for i, t := range tags {
+		names[i] = t.Name
+	}
+	return names
 }
 
 type searchResponse struct {
