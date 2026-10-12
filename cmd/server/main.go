@@ -21,10 +21,17 @@ const (
 	defaultCacheTTL         = 24 * time.Hour
 	defaultCacheLowDataTTL  = time.Hour
 	defaultCacheArtistTTL   = 72 * time.Hour
+	defaultRequestTimeout   = 20 * time.Second
 	defaultCacheNegativeTTL = 10 * time.Minute
 )
 
 func main() {
+	os.Exit(run())
+}
+
+// run starts the server and blocks until it stops. It returns the process
+// exit code; keeping os.Exit out of it lets deferred cleanup run.
+func run() int {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	userAgent := os.Getenv("MB_USER_AGENT")
@@ -35,7 +42,7 @@ func main() {
 	normalizer, err := tags.Load(os.Getenv("TAG_STOPLIST_FILE"))
 	if err != nil {
 		logger.Error("failed to load tag configuration", "error", err.Error())
-		os.Exit(1)
+		return 1
 	}
 
 	tracks, artists, closeCache := withCache(provider.NewClient(userAgent), logger)
@@ -44,32 +51,48 @@ func main() {
 	resolver := provider.NewResolver(tracks, artists, func(names []string) int {
 		return len(normalizer.NormalizeAll(names))
 	})
-	handlers := api.NewHandlers(resolver, normalizer)
-	router := api.NewRouter(handlers, logger)
+	requestTimeout := durationEnv(logger, "REQUEST_TIMEOUT", defaultRequestTimeout)
+	handlers := api.NewHandlers(resolver, normalizer, requestTimeout)
 
 	srv := &http.Server{
 		Addr:              ":8080",
-		Handler:           router,
+		Handler:           api.NewRouter(handlers, logger),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		// Must outlast the handler's own deadline, or the connection would be
+		// cut before the 502 it produces could be written.
+		WriteTimeout:   requestTimeout + 10*time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 16 << 10,
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
 	go func() {
-		logger.Info("starting server", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server error", "error", err.Error())
-			os.Exit(1)
-		}
+		logger.Info("starting server", "addr", srv.Addr, "request_timeout", requestTimeout.String())
+		serveErr <- srv.ListenAndServe()
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Error("graceful shutdown failed", "error", err.Error())
+	select {
+	case err := <-serveErr:
+		logger.Error("server error", "error", err.Error())
+		return 1
+	case <-ctx.Done():
 	}
+	stop() // a second signal now kills the process the default way
+
+	// In-flight requests get their full deadline to finish.
+	logger.Info("shutting down", "grace_period", (requestTimeout + 5*time.Second).String())
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), requestTimeout+5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("graceful shutdown failed", "error", err.Error())
+		return 1
+	}
+	logger.Info("server stopped")
+	return 0
 }
 
 // withCache wraps the MusicBrainz client with Redis caches when REDIS_URL is
