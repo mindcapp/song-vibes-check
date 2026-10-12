@@ -309,3 +309,21 @@ func TestUnknownRouteAndMethod(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricPathIsBounded(t *testing.T) {
+	for path, want := range map[string]string{
+		"/compare":         "/compare",
+		"/health":          "/health",
+		"/metrics":         "/metrics",
+		"/":                "other",
+		"/wp-login.php":    "other",
+		"/compare/":        "other",
+		"/.env":            "other",
+		"/compare?x=1":     "other",
+		"/a/very/long/url": "other",
+	} {
+		if got := metricPath(path); got != want {
+			t.Errorf("metricPath(%q) = %q, want %q", path, got, want)
+		}
+	}
+}

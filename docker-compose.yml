@@ -31,6 +31,19 @@ services:
     networks:
       - default
 
+  # Heavy (PyTorch) and needs a Genius API key, so it only starts on request:
+  #   GENIUS_API_KEY=... docker compose --profile mood up --build
+  mood-service:
+    profiles: ["mood"]
+    build:
+      context: ./mood-service
+    ports:
+      - "8001:8001"
+    environment:
+      - GENIUS_API_KEY=${GENIUS_API_KEY:-}
+    networks:
+      - default
+
   user-service-db:
     image: postgres:16-alpine
     environment:
@@ -80,7 +93,7 @@ services:
       # Bound to loopback: Prometheus has no authentication.
       - "127.0.0.1:9090:9090"
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ${PROMETHEUS_CONFIG:-./prometheus.yml}:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -103,6 +116,7 @@ services:
       - GF_INSTALL_PLUGINS=grafana-clock-panel
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     networks:
       - monitoring
     depends_on:
