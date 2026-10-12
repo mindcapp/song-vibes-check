@@ -1,4 +1,4 @@
-// Package api implements the HTTP layer of the song-similarity service.
+// Package api implements the HTTP layer of the song-vibes-check service.
 package api
 
 import (
@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"song-similarity/internal/provider"
-	"song-similarity/internal/similarity"
-	"song-similarity/internal/tags"
+	"github.com/mindcapp/song-vibes-check/internal/provider"
+	"github.com/mindcapp/song-vibes-check/internal/similarity"
+	"github.com/mindcapp/song-vibes-check/internal/tags"
 )
 
 type TrackSearcher interface {

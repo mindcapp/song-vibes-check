@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"song-similarity/internal/provider"
+	"github.com/mindcapp/song-vibes-check/internal/provider"
 )
 
 var errStoreDown = errors.New("dial tcp 10.0.0.1:6379: connect: connection refused")
