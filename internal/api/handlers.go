@@ -39,8 +39,10 @@ type compareRequest struct {
 }
 
 // compareResponse is the POST /compare payload. tags_a and tags_b are the
-// tags exactly as MusicBrainz returned them; every other field is computed
-// from the normalized tags (synonyms merged, stop-listed tags dropped).
+// tags exactly as MusicBrainz spells them; the scores and the shared/only
+// lists are computed from the normalized tags (synonyms merged, stop-listed
+// tags dropped). tag_source_a and tag_source_b say where each song's tags came
+// from: "recording", "artist" or "mixed".
 type compareResponse struct {
 	GenreScore    float64  `json:"genre_score"`
 	WeightedScore float64  `json:"weighted_score"`
@@ -49,6 +51,8 @@ type compareResponse struct {
 	SharedTags    []string `json:"shared_tags"`
 	OnlyA         []string `json:"only_a"`
 	OnlyB         []string `json:"only_b"`
+	TagSourceA    string   `json:"tag_source_a"`
+	TagSourceB    string   `json:"tag_source_b"`
 }
 
 type errorResponse struct {
@@ -106,6 +110,8 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 		SharedTags:    result.Shared,
 		OnlyA:         result.OnlyA,
 		OnlyB:         result.OnlyB,
+		TagSourceA:    trackA.TagSource,
+		TagSourceB:    trackB.TagSource,
 	})
 }
 
@@ -126,18 +132,35 @@ func cacheStatus(track *provider.Track) string {
 	return "miss"
 }
 
-// profile turns a track's raw tags into normalized tag -> vote count. Votes
-// of tags that normalize to the same name ("hip hop", "hip-hop") are summed.
-func (h *Handlers) profile(track *provider.Track) map[string]int {
-	profile := make(map[string]int, len(track.WeightedTags))
-	for _, t := range track.WeightedTags {
+// profile turns a track's tags into normalized tag -> weight. Recording tags
+// and artist tags are each reduced to shares of their own votes, so that the
+// two lists are comparable whatever their vote totals, and artist tags then
+// count for provider.ArtistWeight of a recording tag.
+func (h *Handlers) profile(track *provider.Track) map[string]float64 {
+	profile := make(map[string]float64)
+	h.addShares(profile, track.RecordingTags, 1)
+	h.addShares(profile, track.ArtistTags, provider.ArtistWeight)
+	return profile
+}
+
+// addShares normalizes the tags, sums the votes of those that normalize to
+// the same name ("hip hop", "hip-hop") and adds each one's share of the total,
+// scaled by weight, to profile. A tag nobody voted for counts as one vote.
+func (h *Handlers) addShares(profile map[string]float64, tagList []provider.Tag, weight float64) {
+	votes := make(map[string]int, len(tagList))
+	total := 0
+	for _, t := range tagList {
 		name, ok := h.normalizer.Normalize(t.Name)
 		if !ok {
 			continue
 		}
-		profile[name] += max(t.Count, 1)
+		count := max(t.Count, 1)
+		votes[name] += count
+		total += count
 	}
-	return profile
+	for name, count := range votes {
+		profile[name] += weight * float64(count) / float64(total)
+	}
 }
 
 type healthResponse struct {

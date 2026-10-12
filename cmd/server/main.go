@@ -20,6 +20,7 @@ const (
 	defaultUserAgent        = "song-similarity/0.1.0 ( https://example.com/song-similarity )"
 	defaultCacheTTL         = 24 * time.Hour
 	defaultCacheLowDataTTL  = time.Hour
+	defaultCacheArtistTTL   = 72 * time.Hour
 	defaultCacheNegativeTTL = 10 * time.Minute
 )
 
@@ -37,10 +38,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	searcher, closeCache := withCache(provider.NewClient(userAgent), logger)
+	tracks, artists, closeCache := withCache(provider.NewClient(userAgent), logger)
 	defer closeCache()
 
-	handlers := api.NewHandlers(searcher, normalizer)
+	resolver := provider.NewResolver(tracks, artists, func(names []string) int {
+		return len(normalizer.NormalizeAll(names))
+	})
+	handlers := api.NewHandlers(resolver, normalizer)
 	router := api.NewRouter(handlers, logger)
 
 	srv := &http.Server{
@@ -68,28 +72,29 @@ func main() {
 	}
 }
 
-// withCache wraps the searcher with a Redis cache when REDIS_URL is set. Any
-// problem with the cache configuration or with Redis itself only disables or
-// degrades caching; it never stops the service from starting.
-func withCache(searcher api.TrackSearcher, logger *slog.Logger) (api.TrackSearcher, func()) {
+// withCache wraps the MusicBrainz client with Redis caches when REDIS_URL is
+// set. Any problem with the cache configuration or with Redis itself only
+// disables or degrades caching; it never stops the service from starting.
+func withCache(client *provider.Client, logger *slog.Logger) (provider.TrackSearcher, provider.ArtistTagger, func()) {
 	noop := func() {}
 
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
 		logger.Info("cache disabled: REDIS_URL is not set")
-		return searcher, noop
+		return client, client, noop
 	}
 
 	store, err := cache.NewRedisStore(redisURL, logger)
 	if err != nil {
 		logger.Warn("cache disabled: invalid REDIS_URL", "error", err.Error())
-		return searcher, noop
+		return client, client, noop
 	}
 
 	cfg := cache.Config{
 		TTL:         durationEnv(logger, "CACHE_TTL", defaultCacheTTL),
 		LowDataTTL:  durationEnv(logger, "CACHE_LOW_DATA_TTL", defaultCacheLowDataTTL),
 		NegativeTTL: durationEnv(logger, "CACHE_NEGATIVE_TTL", defaultCacheNegativeTTL),
+		ArtistTTL:   durationEnv(logger, "CACHE_ARTIST_TTL", defaultCacheArtistTTL),
 	}
 
 	pingCtx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -97,8 +102,8 @@ func withCache(searcher api.TrackSearcher, logger *slog.Logger) (api.TrackSearch
 	if err := store.Ping(pingCtx); err != nil {
 		logger.Warn("redis is not reachable at startup, will keep retrying", "error", err.Error())
 	} else {
-		logger.Info("cache enabled", "ttl", cfg.TTL.String(),
-			"low_data_ttl", cfg.LowDataTTL.String(), "negative_ttl", cfg.NegativeTTL.String())
+		logger.Info("cache enabled", "ttl", cfg.TTL.String(), "low_data_ttl", cfg.LowDataTTL.String(),
+			"negative_ttl", cfg.NegativeTTL.String(), "artist_ttl", cfg.ArtistTTL.String())
 	}
 
 	closeStore := func() {
@@ -106,7 +111,7 @@ func withCache(searcher api.TrackSearcher, logger *slog.Logger) (api.TrackSearch
 			logger.Warn("closing redis client failed", "error", err.Error())
 		}
 	}
-	return cache.NewSearcher(searcher, store, cfg, logger), closeStore
+	return cache.NewSearcher(client, store, cfg, logger), cache.NewArtistTags(client, store, cfg, logger), closeStore
 }
 
 // durationEnv reads a Go duration ("24h", "90m") from the environment,

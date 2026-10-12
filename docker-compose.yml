@@ -12,6 +12,7 @@ services:
       - CACHE_TTL=${CACHE_TTL:-24h}
       - CACHE_LOW_DATA_TTL=${CACHE_LOW_DATA_TTL:-1h}
       - CACHE_NEGATIVE_TTL=${CACHE_NEGATIVE_TTL:-10m}
+      - CACHE_ARTIST_TTL=${CACHE_ARTIST_TTL:-72h}
     depends_on:
       - redis
     networks:

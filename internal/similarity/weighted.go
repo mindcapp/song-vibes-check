@@ -19,10 +19,10 @@ type Result struct {
 	OnlyB []string
 }
 
-// Compare scores two tag profiles (tag -> vote count) and reports which tags
-// they share. Counts below 1 are treated as 1, so a tag nobody voted for still
-// counts as present.
-func Compare(a, b map[string]int) Result {
+// Compare scores two tag profiles (tag -> weight) and reports which tags they
+// share. Weights are relative within a profile: only their proportions
+// matter. Tags with a weight of zero or less are ignored.
+func Compare(a, b map[string]float64) Result {
 	shareA, shareB := shares(a), shares(b)
 
 	res := Result{Shared: []string{}, OnlyA: []string{}, OnlyB: []string{}}
@@ -52,11 +52,11 @@ func Compare(a, b map[string]int) Result {
 }
 
 // WeightedJaccard returns sum(min(a, b)) / sum(max(a, b)) over all tags, where
-// a and b are each tag's share of its track's votes. Using shares rather than
-// raw counts keeps a heavily tagged hit comparable with an obscure track: what
-// matters is how the votes are distributed, not how many there are. The result
-// is in [0, 1]; it is 0 when either profile is empty.
-func WeightedJaccard(a, b map[string]int) float64 {
+// a and b are each tag's share of its profile's total weight. Using shares
+// rather than raw weights keeps a heavily tagged hit comparable with an
+// obscure track: what matters is how the votes are distributed, not how many
+// there are. The result is in [0, 1]; it is 0 when either profile is empty.
+func WeightedJaccard(a, b map[string]float64) float64 {
 	return weightedJaccard(shares(a), shares(b))
 }
 
@@ -78,14 +78,18 @@ func weightedJaccard(a, b map[string]float64) float64 {
 	return minSum / maxSum
 }
 
-func shares(counts map[string]int) map[string]float64 {
-	total := 0
-	for _, c := range counts {
-		total += max(c, 1)
+func shares(weights map[string]float64) map[string]float64 {
+	var total float64
+	for _, w := range weights {
+		if w > 0 {
+			total += w
+		}
 	}
-	out := make(map[string]float64, len(counts))
-	for tag, c := range counts {
-		out[tag] = float64(max(c, 1)) / float64(total)
+	out := make(map[string]float64, len(weights))
+	for tag, w := range weights {
+		if w > 0 {
+			out[tag] = w / total
+		}
 	}
 	return out
 }
