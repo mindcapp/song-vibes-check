@@ -18,7 +18,14 @@ import (
 )
 
 const (
-	keyPrefix = "track:v1:"
+	// keyPrefix carries a version that is bumped whenever the meaning of a
+	// cached track changes. v2: tags are merged from several recordings.
+	keyPrefix = "track:v2:"
+	// LowDataTags is the number of tags below which a track is considered
+	// thinly tagged and is cached for Config.LowDataTTL only.
+	LowDataTags = 3
+	// DefaultLowDataTTL is the default for Config.LowDataTTL.
+	DefaultLowDataTTL = time.Hour
 	// DefaultCooldown is how long the cache is bypassed after a store error.
 	DefaultCooldown = 30 * time.Second
 	// DefaultOpTimeout bounds a single cache read or write.
@@ -51,11 +58,14 @@ type TrackSearcher interface {
 
 // Config tunes a Searcher.
 type Config struct {
-	// TTL is how long a track with tags stays cached.
+	// TTL is how long a well-tagged track stays cached.
 	TTL time.Duration
-	// NegativeTTL is how long "not found" and "found but untagged" stay
-	// cached. Kept short because MusicBrainz data is crowd-sourced and such
-	// results can change.
+	// LowDataTTL is how long a track with fewer than LowDataTags tags stays
+	// cached. Such results are the ones most likely to improve as MusicBrainz
+	// users add tags. Zero means DefaultLowDataTTL.
+	LowDataTTL time.Duration
+	// NegativeTTL is how long "not found" stays cached. Kept short because
+	// MusicBrainz data is crowd-sourced and the song may be added.
 	NegativeTTL time.Duration
 	// Cooldown is how long the cache is bypassed after a store error, so an
 	// unreachable Redis costs one timeout rather than one per request.
@@ -93,6 +103,9 @@ func NewSearcher(next TrackSearcher, store Store, cfg Config, logger *slog.Logge
 	if cfg.OpTimeout <= 0 {
 		cfg.OpTimeout = DefaultOpTimeout
 	}
+	if cfg.LowDataTTL <= 0 {
+		cfg.LowDataTTL = DefaultLowDataTTL
+	}
 	s := &Searcher{next: next, store: store, cfg: cfg, logger: logger, now: time.Now}
 	s.flights.joined = func(leader bool) {
 		if leader {
@@ -114,10 +127,11 @@ type entry struct {
 }
 
 type entryTrack struct {
-	ID     string     `json:"id"`
-	Title  string     `json:"title"`
-	Artist string     `json:"artist"`
-	Tags   []entryTag `json:"tags"`
+	ID        string     `json:"id"`
+	Title     string     `json:"title"`
+	Artist    string     `json:"artist"`
+	Tags      []entryTag `json:"tags"`
+	TagSource string     `json:"tag_source,omitempty"`
 }
 
 type entryTag struct {
@@ -146,8 +160,8 @@ func (s *Searcher) SearchTrack(ctx context.Context, artist, title string) (*prov
 		switch {
 		case err == nil:
 			ttl := s.cfg.TTL
-			if len(track.Tags) == 0 {
-				ttl = s.cfg.NegativeTTL
+			if len(track.Tags) < LowDataTags {
+				ttl = s.cfg.LowDataTTL
 			}
 			s.save(flightCtx, key, entry{Found: true, Track: toEntry(track)}, ttl)
 		case errors.Is(err, provider.ErrNotFound):
@@ -245,11 +259,11 @@ func toEntry(t *provider.Track) *entryTrack {
 	for i, tag := range t.WeightedTags {
 		tags[i] = entryTag{Name: tag.Name, Count: tag.Count}
 	}
-	return &entryTrack{ID: t.ID, Title: t.Title, Artist: t.Artist, Tags: tags}
+	return &entryTrack{ID: t.ID, Title: t.Title, Artist: t.Artist, Tags: tags, TagSource: t.TagSource}
 }
 
 func fromEntry(e *entryTrack) *provider.Track {
-	track := &provider.Track{ID: e.ID, Title: e.Title, Artist: e.Artist, Cached: true}
+	track := &provider.Track{ID: e.ID, Title: e.Title, Artist: e.Artist, TagSource: e.TagSource, Cached: true}
 	for _, tag := range e.Tags {
 		track.Tags = append(track.Tags, tag.Name)
 		track.WeightedTags = append(track.WeightedTags, provider.Tag{Name: tag.Name, Count: tag.Count})

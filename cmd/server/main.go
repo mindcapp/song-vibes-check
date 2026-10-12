@@ -19,6 +19,7 @@ import (
 const (
 	defaultUserAgent        = "song-similarity/0.1.0 ( https://example.com/song-similarity )"
 	defaultCacheTTL         = 24 * time.Hour
+	defaultCacheLowDataTTL  = time.Hour
 	defaultCacheNegativeTTL = 10 * time.Minute
 )
 
@@ -87,6 +88,7 @@ func withCache(searcher api.TrackSearcher, logger *slog.Logger) (api.TrackSearch
 
 	cfg := cache.Config{
 		TTL:         durationEnv(logger, "CACHE_TTL", defaultCacheTTL),
+		LowDataTTL:  durationEnv(logger, "CACHE_LOW_DATA_TTL", defaultCacheLowDataTTL),
 		NegativeTTL: durationEnv(logger, "CACHE_NEGATIVE_TTL", defaultCacheNegativeTTL),
 	}
 
@@ -95,7 +97,8 @@ func withCache(searcher api.TrackSearcher, logger *slog.Logger) (api.TrackSearch
 	if err := store.Ping(pingCtx); err != nil {
 		logger.Warn("redis is not reachable at startup, will keep retrying", "error", err.Error())
 	} else {
-		logger.Info("cache enabled", "ttl", cfg.TTL.String(), "negative_ttl", cfg.NegativeTTL.String())
+		logger.Info("cache enabled", "ttl", cfg.TTL.String(),
+			"low_data_ttl", cfg.LowDataTTL.String(), "negative_ttl", cfg.NegativeTTL.String())
 	}
 
 	closeStore := func() {

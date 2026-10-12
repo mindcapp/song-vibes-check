@@ -66,12 +66,13 @@ func (c *countingSearcher) SearchTrack(context.Context, string, string) (*provid
 func taggedTrack() *provider.Track {
 	return &provider.Track{
 		ID: "rec-1", Title: "Bohemian Rhapsody", Artist: "Queen",
-		Tags:         []string{"rock", "glam rock"},
-		WeightedTags: []provider.Tag{{Name: "rock", Count: 7}, {Name: "glam rock", Count: 2}},
+		Tags:         []string{"rock", "glam rock", "art rock"},
+		WeightedTags: []provider.Tag{{Name: "rock", Count: 7}, {Name: "glam rock", Count: 2}, {Name: "art rock", Count: 1}},
+		TagSource:    provider.TagSourceRecording,
 	}
 }
 
-var testConfig = Config{TTL: time.Hour, NegativeTTL: time.Minute, Cooldown: 30 * time.Second}
+var testConfig = Config{TTL: 24 * time.Hour, LowDataTTL: time.Hour, NegativeTTL: time.Minute, Cooldown: 30 * time.Second}
 
 func newTestSearcher(next TrackSearcher, store Store) *Searcher {
 	return NewSearcher(next, store, testConfig, slog.New(slog.NewJSONHandler(io.Discard, nil)))
@@ -150,16 +151,53 @@ func TestSearcherCachesNotFoundBriefly(t *testing.T) {
 	}
 }
 
-func TestSearcherCachesUntaggedTrackBriefly(t *testing.T) {
-	next := &countingSearcher{track: &provider.Track{ID: "rec-2", Title: "Obscure", Artist: "Nobody"}}
-	store := newMemStore()
-	s := newTestSearcher(next, store)
-
-	if _, err := s.SearchTrack(context.Background(), "Nobody", "Obscure"); err != nil {
-		t.Fatalf("lookup: %v", err)
+func TestSearcherTTLDependsOnTagCount(t *testing.T) {
+	withTags := func(n int) *provider.Track {
+		track := &provider.Track{ID: "rec", Title: "Song", Artist: "Artist"}
+		for i := 0; i < n; i++ {
+			name := string(rune('a' + i))
+			track.Tags = append(track.Tags, name)
+			track.WeightedTags = append(track.WeightedTags, provider.Tag{Name: name, Count: 1})
+		}
+		return track
 	}
-	if ttl := store.ttls[Key("Nobody", "Obscure")]; ttl != testConfig.NegativeTTL {
-		t.Errorf("stored with TTL %v, want negative TTL %v", ttl, testConfig.NegativeTTL)
+
+	tests := []struct {
+		tags int
+		want time.Duration
+	}{
+		{tags: 0, want: testConfig.LowDataTTL},
+		{tags: 1, want: testConfig.LowDataTTL},
+		{tags: 2, want: testConfig.LowDataTTL},
+		{tags: 3, want: testConfig.TTL},
+		{tags: 8, want: testConfig.TTL},
+	}
+
+	for _, tt := range tests {
+		store := newMemStore()
+		s := newTestSearcher(&countingSearcher{track: withTags(tt.tags)}, store)
+
+		if _, err := s.SearchTrack(context.Background(), "Artist", "Song"); err != nil {
+			t.Fatalf("%d tags: lookup: %v", tt.tags, err)
+		}
+		if ttl := store.ttls[Key("Artist", "Song")]; ttl != tt.want {
+			t.Errorf("%d tags: stored with TTL %v, want %v", tt.tags, ttl, tt.want)
+		}
+	}
+}
+
+func TestSearcherKeepsTagSource(t *testing.T) {
+	upstream := taggedTrack()
+	upstream.TagSource = provider.TagSourceArtist
+	s := newTestSearcher(&countingSearcher{track: upstream}, newMemStore())
+
+	_, _ = s.SearchTrack(context.Background(), "Queen", "Bohemian Rhapsody")
+	cached, err := s.SearchTrack(context.Background(), "Queen", "Bohemian Rhapsody")
+	if err != nil || !cached.Cached {
+		t.Fatalf("second lookup: track=%+v err=%v, want a cache hit", cached, err)
+	}
+	if cached.TagSource != provider.TagSourceArtist {
+		t.Errorf("TagSource = %q after a cache round trip, want %q", cached.TagSource, provider.TagSourceArtist)
 	}
 }
 
@@ -267,11 +305,11 @@ func TestKey(t *testing.T) {
 		artist, title string
 		want          string
 	}{
-		{"Queen", "Bohemian Rhapsody", "track:v1:queen|bohemian+rhapsody"},
-		{"  QUEEN  ", "bohemian   RHAPSODY ", "track:v1:queen|bohemian+rhapsody"},
-		{"AC/DC", "T.N.T.", "track:v1:ac%2Fdc|t.n.t."},
-		{"a|b", "c", "track:v1:a%7Cb|c"},
-		{"a", "b|c", "track:v1:a|b%7Cc"},
+		{"Queen", "Bohemian Rhapsody", "track:v2:queen|bohemian+rhapsody"},
+		{"  QUEEN  ", "bohemian   RHAPSODY ", "track:v2:queen|bohemian+rhapsody"},
+		{"AC/DC", "T.N.T.", "track:v2:ac%2Fdc|t.n.t."},
+		{"a|b", "c", "track:v2:a%7Cb|c"},
+		{"a", "b|c", "track:v2:a|b%7Cc"},
 	}
 
 	for _, tt := range tests {
