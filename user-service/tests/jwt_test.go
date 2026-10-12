@@ -2,6 +2,7 @@ package tests
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,5 +76,29 @@ func TestParseToken_Expired(t *testing.T) {
 
 	if _, err := utils.ParseToken(signed); err == nil {
 		t.Fatal("expected error for expired token")
+	}
+}
+
+func TestValidateSecretKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     string
+		wantErr bool
+	}{
+		{name: "empty", key: "", wantErr: true},
+		{name: "placeholder from .env.example", key: "change-me-to-a-long-random-string", wantErr: true},
+		{name: "too short", key: "short-key", wantErr: true},
+		{name: "31 characters", key: strings.Repeat("a", 31), wantErr: true},
+		{name: "32 characters", key: strings.Repeat("a", 32), wantErr: false},
+		{name: "openssl rand -hex 32", key: "9f2c1e7ab4d3586e0c1a7f5b2d4e6f8091a3b5c7d9e1f20416283a4c5e6f7081", wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := utils.ValidateSecretKey(tt.key)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateSecretKey(%q) error = %v, wantErr %v", tt.key, err, tt.wantErr)
+			}
+		})
 	}
 }
