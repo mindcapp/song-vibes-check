@@ -192,7 +192,13 @@ sudo certbot --nginx -d your-domain.example.com
 
 ### CI/CD (GitHub Actions)
 
-Workflow [.github/workflows/deploy.yml](.github/workflows/deploy.yml) запускается на каждый push в `main`:
+Workflow [.github/workflows/deploy.yml](.github/workflows/deploy.yml) состоит из двух джоб.
+
+**`test`** — на каждый pull request и на push в `main`: `gofmt`, `go vet`, `go test -race ./...` для основного модуля и `go vet` + `go test` для `user-service`.
+
+> Тесты хранилища `user-service` идут на in-memory SQLite, а в docker-compose и в проде используется PostgreSQL. Поведение, специфичное для Postgres (типы, ограничения, диалект SQL), этими тестами не проверяется.
+
+**`deploy`** — только при push в `main` и только после успешной `test`:
 
 1. checkout кода;
 2. `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o song-similarity ./cmd/server`;
