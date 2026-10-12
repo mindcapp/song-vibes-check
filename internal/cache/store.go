@@ -25,17 +25,22 @@ type RedisStore struct {
 }
 
 // NewRedisStore builds a store from a Redis URL such as
-// "redis://redis:6379/0". Timeouts are deliberately short: the cache is an
-// optimisation, and a slow Redis must not slow requests down.
+// "redis://redis:6379/0". The client is configured to fail fast: the cache is
+// an optimisation, so a slow or missing Redis must cost milliseconds, not
+// seconds. Callers are still expected to bound every call with a context
+// deadline, which the client honours.
 func NewRedisStore(redisURL string, logger *slog.Logger) (*RedisStore, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
 		return nil, fmt.Errorf("cache: parse REDIS_URL: %w", err)
 	}
-	opts.DialTimeout = 500 * time.Millisecond
-	opts.ReadTimeout = 300 * time.Millisecond
-	opts.WriteTimeout = 300 * time.Millisecond
-	opts.MaxRetries = 0
+	opts.DialTimeout = 200 * time.Millisecond
+	opts.ReadTimeout = 200 * time.Millisecond
+	opts.WriteTimeout = 200 * time.Millisecond
+	opts.PoolTimeout = 200 * time.Millisecond
+	opts.ContextTimeoutEnabled = true
+	opts.MaxRetries = -1 // 0 would mean "default" (3 retries)
+	opts.DialerRetries = 1
 
 	redis.SetLogger(slogAdapter{logger})
 
@@ -67,12 +72,15 @@ func (s *RedisStore) Close() error {
 	return s.client.Close()
 }
 
-// slogAdapter routes go-redis's internal log lines through slog so they stay
-// structured like the rest of the service's output.
+// slogAdapter routes go-redis's internal log lines to slog at DEBUG. They
+// repeat what the cache already reports once per outage at WARN, so at the
+// default INFO level they are silent.
 type slogAdapter struct {
 	logger *slog.Logger
 }
 
-func (a slogAdapter) Printf(_ context.Context, format string, v ...interface{}) {
-	a.logger.Warn("redis client", "detail", fmt.Sprintf(format, v...))
+func (a slogAdapter) Printf(ctx context.Context, format string, v ...interface{}) {
+	if a.logger.Enabled(ctx, slog.LevelDebug) {
+		a.logger.Debug("redis client", "detail", fmt.Sprintf(format, v...))
+	}
 }

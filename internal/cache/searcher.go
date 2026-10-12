@@ -20,6 +20,8 @@ const (
 	keyPrefix = "track:v1:"
 	// DefaultCooldown is how long the cache is bypassed after a store error.
 	DefaultCooldown = 30 * time.Second
+	// DefaultOpTimeout bounds a single cache read or write.
+	DefaultOpTimeout = 150 * time.Millisecond
 )
 
 var (
@@ -54,6 +56,9 @@ type Config struct {
 	// unreachable Redis costs one timeout rather than one per request.
 	// Zero means DefaultCooldown.
 	Cooldown time.Duration
+	// OpTimeout is the hard deadline for one cache read or write.
+	// Zero means DefaultOpTimeout.
+	OpTimeout time.Duration
 }
 
 // Searcher wraps a TrackSearcher with a read-through cache. Store failures
@@ -74,6 +79,9 @@ type Searcher struct {
 func NewSearcher(next TrackSearcher, store Store, cfg Config, logger *slog.Logger) *Searcher {
 	if cfg.Cooldown <= 0 {
 		cfg.Cooldown = DefaultCooldown
+	}
+	if cfg.OpTimeout <= 0 {
+		cfg.OpTimeout = DefaultOpTimeout
 	}
 	return &Searcher{next: next, store: store, cfg: cfg, logger: logger, now: time.Now}
 }
@@ -137,7 +145,9 @@ func (s *Searcher) lookup(ctx context.Context, key string) (track *provider.Trac
 		return nil, nil, false
 	}
 
-	raw, found, getErr := s.store.Get(ctx, key)
+	opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
+	raw, found, getErr := s.store.Get(opCtx, key)
+	cancel()
 	if getErr != nil {
 		s.fail(ctx, "get", getErr)
 		return nil, nil, false
@@ -170,11 +180,13 @@ func (s *Searcher) save(ctx context.Context, key string, e entry, ttl time.Durat
 	}
 
 	// The caller's context may already be cancelled (client went away) while
-	// the result is still worth keeping, so the write gets its own deadline.
-	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	// the result is still worth keeping, so the write is detached from it and
+	// bounded only by the per-operation deadline.
+	writeCtx := context.WithoutCancel(ctx)
+	opCtx, cancel := context.WithTimeout(writeCtx, s.cfg.OpTimeout)
 	defer cancel()
 
-	if err := s.store.Set(writeCtx, key, raw, ttl); err != nil {
+	if err := s.store.Set(opCtx, key, raw, ttl); err != nil {
 		s.fail(writeCtx, "set", err)
 	}
 }
@@ -184,8 +196,9 @@ func (s *Searcher) bypassed() bool {
 	return until != 0 && s.now().UnixNano() < until
 }
 
-// fail records a store error and opens the bypass window. Errors caused by the
-// caller's own context ending say nothing about Redis and are ignored.
+// fail records a store error and opens the bypass window. ctx is the context
+// the operation was started from (not the per-operation deadline): if that
+// one has ended, the error says nothing about Redis and is ignored.
 func (s *Searcher) fail(ctx context.Context, op string, err error) {
 	if ctx.Err() != nil {
 		return
