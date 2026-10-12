@@ -59,16 +59,16 @@ type errorResponse struct {
 func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 	var req compareRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		h.fail(w, r, http.StatusBadRequest, "", errors.New("invalid JSON body"))
 		return
 	}
 
 	if req.SongA.Artist == "" || req.SongA.Title == "" {
-		writeError(w, http.StatusBadRequest, "song_a requires both artist and title")
+		h.fail(w, r, http.StatusBadRequest, "song_a", errors.New("song_a requires both artist and title"))
 		return
 	}
 	if req.SongB.Artist == "" || req.SongB.Title == "" {
-		writeError(w, http.StatusBadRequest, "song_b requires both artist and title")
+		h.fail(w, r, http.StatusBadRequest, "song_b", errors.New("song_b requires both artist and title"))
 		return
 	}
 
@@ -79,13 +79,13 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 
 	trackA, err := h.lookupTrack(r.Context(), req.SongA)
 	if err != nil {
-		writeError(w, statusFor(err), err.Error())
+		h.fail(w, r, statusFor(err), "song_a", err)
 		return
 	}
 
 	trackB, err := h.lookupTrack(r.Context(), req.SongB)
 	if err != nil {
-		writeError(w, statusFor(err), err.Error())
+		h.fail(w, r, statusFor(err), "song_b", err)
 		return
 	}
 
@@ -105,6 +105,16 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 		OnlyA:         result.OnlyA,
 		OnlyB:         result.OnlyB,
 	})
+}
+
+// fail answers with an error and records its text, and which song it was
+// about (if any), on the request's access-log line.
+func (h *Handlers) fail(w http.ResponseWriter, r *http.Request, status int, song string, err error) {
+	addLogAttr(r.Context(), slog.String("error", err.Error()))
+	if song != "" {
+		addLogAttr(r.Context(), slog.String("failed_song", song))
+	}
+	writeError(w, status, err.Error())
 }
 
 func cacheStatus(track *provider.Track) string {
