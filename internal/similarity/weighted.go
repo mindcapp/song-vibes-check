@@ -61,15 +61,18 @@ func WeightedJaccard(a, b map[string]float64) float64 {
 }
 
 func weightedJaccard(a, b map[string]float64) float64 {
+	// Tags are visited in sorted order: floating-point addition is not
+	// associative, and Go's map order is random, so summing in map order would
+	// let the same input give results that differ in the last digits.
 	var minSum, maxSum float64
-	for tag, wa := range a {
-		wb := b[tag]
+	for _, tag := range sortedKeys(a) {
+		wa, wb := a[tag], b[tag]
 		minSum += math.Min(wa, wb)
 		maxSum += math.Max(wa, wb)
 	}
-	for tag, wb := range b {
+	for _, tag := range sortedKeys(b) {
 		if _, ok := a[tag]; !ok {
-			maxSum += wb
+			maxSum += b[tag]
 		}
 	}
 	if maxSum == 0 {
@@ -80,8 +83,8 @@ func weightedJaccard(a, b map[string]float64) float64 {
 
 func shares(weights map[string]float64) map[string]float64 {
 	var total float64
-	for _, w := range weights {
-		if w > 0 {
+	for _, tag := range sortedKeys(weights) {
+		if w := weights[tag]; w > 0 {
 			total += w
 		}
 	}
@@ -92,6 +95,15 @@ func shares(weights map[string]float64) map[string]float64 {
 		}
 	}
 	return out
+}
+
+func sortedKeys(m map[string]float64) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func sortByWeight(tags []string, weight func(string) float64) {
