@@ -11,7 +11,7 @@ func almostEqual(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 func TestCompare(t *testing.T) {
 	tests := []struct {
 		name         string
-		a, b         map[string]int
+		a, b         map[string]float64
 		wantGenre    float64
 		wantWeighted float64
 		wantShared   []string
@@ -24,35 +24,35 @@ func TestCompare(t *testing.T) {
 		},
 		{
 			name:       "one empty",
-			a:          map[string]int{"rock": 3},
+			a:          map[string]float64{"rock": 3},
 			wantShared: []string{}, wantOnlyA: []string{"rock"}, wantOnlyB: []string{},
 		},
 		{
 			name:      "identical profiles",
-			a:         map[string]int{"rock": 4, "pop": 1},
-			b:         map[string]int{"rock": 4, "pop": 1},
+			a:         map[string]float64{"rock": 4, "pop": 1},
+			b:         map[string]float64{"rock": 4, "pop": 1},
 			wantGenre: 1, wantWeighted: 1,
 			wantShared: []string{"rock", "pop"}, wantOnlyA: []string{}, wantOnlyB: []string{},
 		},
 		{
 			name:      "same distribution, different vote totals",
-			a:         map[string]int{"rock": 40, "pop": 10},
-			b:         map[string]int{"rock": 4, "pop": 1},
+			a:         map[string]float64{"rock": 40, "pop": 10},
+			b:         map[string]float64{"rock": 4, "pop": 1},
 			wantGenre: 1, wantWeighted: 1,
 			wantShared: []string{"rock", "pop"}, wantOnlyA: []string{}, wantOnlyB: []string{},
 		},
 		{
 			name:       "no overlap",
-			a:          map[string]int{"rock": 2},
-			b:          map[string]int{"jazz": 5},
+			a:          map[string]float64{"rock": 2},
+			b:          map[string]float64{"jazz": 5},
 			wantShared: []string{}, wantOnlyA: []string{"rock"}, wantOnlyB: []string{"jazz"},
 		},
 		{
 			// shares: a = rock .75, pop .25; b = rock .25, jazz .75
 			// min = .25; max = .75 + .25 + .75 = 1.75
 			name:      "shared tag is dominant in one track only",
-			a:         map[string]int{"rock": 3, "pop": 1},
-			b:         map[string]int{"rock": 1, "jazz": 3},
+			a:         map[string]float64{"rock": 3, "pop": 1},
+			b:         map[string]float64{"rock": 1, "jazz": 3},
 			wantGenre: 1.0 / 3.0, wantWeighted: 0.25 / 1.75,
 			wantShared: []string{"rock"}, wantOnlyA: []string{"pop"}, wantOnlyB: []string{"jazz"},
 		},
@@ -60,22 +60,30 @@ func TestCompare(t *testing.T) {
 			// shares: a = rock .9, pop .1; b = rock .9, jazz .1
 			// min = .9; max = .9 + .1 + .1 = 1.1
 			name:      "shared tag is dominant in both tracks",
-			a:         map[string]int{"rock": 9, "pop": 1},
-			b:         map[string]int{"rock": 9, "jazz": 1},
+			a:         map[string]float64{"rock": 9, "pop": 1},
+			b:         map[string]float64{"rock": 9, "jazz": 1},
 			wantGenre: 1.0 / 3.0, wantWeighted: 0.9 / 1.1,
 			wantShared: []string{"rock"}, wantOnlyA: []string{"pop"}, wantOnlyB: []string{"jazz"},
 		},
 		{
-			name:      "zero and negative counts count as one vote",
-			a:         map[string]int{"rock": 0, "pop": -2},
-			b:         map[string]int{"rock": 1, "pop": 1},
+			name: "zero and negative weights are ignored",
+			a:    map[string]float64{"rock": 2, "pop": 0, "jazz": -1},
+			b:    map[string]float64{"rock": 1, "pop": 1},
+			// a is just rock (share 1); b is rock .5, pop .5 -> min .5, max 1.5.
+			wantGenre: 0.5, wantWeighted: 1.0 / 3.0,
+			wantShared: []string{"rock"}, wantOnlyA: []string{}, wantOnlyB: []string{"pop"},
+		},
+		{
+			name:      "fractional weights",
+			a:         map[string]float64{"rock": 0.75, "pop": 0.25},
+			b:         map[string]float64{"rock": 1.5, "pop": 0.5},
 			wantGenre: 1, wantWeighted: 1,
-			wantShared: []string{"pop", "rock"}, wantOnlyA: []string{}, wantOnlyB: []string{},
+			wantShared: []string{"rock", "pop"}, wantOnlyA: []string{}, wantOnlyB: []string{},
 		},
 		{
 			name:      "lists are ordered by weight, then name",
-			a:         map[string]int{"rock": 1, "blues": 5, "folk": 2, "ambient": 2},
-			b:         map[string]int{"rock": 1, "blues": 5, "techno": 1, "house": 3},
+			a:         map[string]float64{"rock": 1, "blues": 5, "folk": 2, "ambient": 2},
+			b:         map[string]float64{"rock": 1, "blues": 5, "techno": 1, "house": 3},
 			wantGenre: 2.0 / 6.0, wantWeighted: 0.6 / 1.4,
 			wantShared: []string{"blues", "rock"},
 			wantOnlyA:  []string{"ambient", "folk"},
@@ -107,10 +115,10 @@ func TestCompare(t *testing.T) {
 }
 
 func TestCompareGenreScoreMatchesCompareGenres(t *testing.T) {
-	a := map[string]int{"rock": 3, "pop": 1, "glam rock": 2}
-	b := map[string]int{"rock": 1, "jazz": 4}
+	a := map[string]float64{"rock": 3, "pop": 1, "glam rock": 2}
+	b := map[string]float64{"rock": 1, "jazz": 4}
 
-	keys := func(m map[string]int) []string {
+	keys := func(m map[string]float64) []string {
 		out := make([]string, 0, len(m))
 		for k := range m {
 			out = append(out, k)
@@ -124,8 +132,8 @@ func TestCompareGenreScoreMatchesCompareGenres(t *testing.T) {
 }
 
 func TestWeightedJaccardIsSymmetricAndBounded(t *testing.T) {
-	a := map[string]int{"rock": 7, "pop": 2, "glam rock": 1}
-	b := map[string]int{"rock": 2, "jazz": 9}
+	a := map[string]float64{"rock": 7, "pop": 2, "glam rock": 1}
+	b := map[string]float64{"rock": 2, "jazz": 9}
 
 	ab, ba := WeightedJaccard(a, b), WeightedJaccard(b, a)
 	if !almostEqual(ab, ba) {

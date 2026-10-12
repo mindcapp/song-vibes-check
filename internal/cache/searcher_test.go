@@ -65,16 +65,15 @@ func (c *countingSearcher) SearchTrack(context.Context, string, string) (*provid
 
 func taggedTrack() *provider.Track {
 	return &provider.Track{
-		ID: "rec-1", Title: "Bohemian Rhapsody", Artist: "Queen",
-		Tags:         []string{"rock", "glam rock", "art rock"},
-		WeightedTags: []provider.Tag{{Name: "rock", Count: 7}, {Name: "glam rock", Count: 2}, {Name: "art rock", Count: 1}},
-		TagSource:    provider.TagSourceRecording,
+		ID: "rec-1", Title: "Bohemian Rhapsody", Artist: "Queen", ArtistID: "queen-id",
+		Tags:          []string{"rock", "glam rock", "art rock"},
+		RecordingTags: []provider.Tag{{Name: "rock", Count: 7}, {Name: "glam rock", Count: 2}, {Name: "art rock", Count: 1}},
 	}
 }
 
 var testConfig = Config{TTL: 24 * time.Hour, LowDataTTL: time.Hour, NegativeTTL: time.Minute, Cooldown: 30 * time.Second}
 
-func newTestSearcher(next TrackSearcher, store Store) *Searcher {
+func newTestSearcher(next provider.TrackSearcher, store Store) *Searcher {
 	return NewSearcher(next, store, testConfig, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 }
 
@@ -82,9 +81,9 @@ type counters struct{ hits, misses, errs float64 }
 
 func readCounters() counters {
 	return counters{
-		hits:   testutil.ToFloat64(hitsTotal),
-		misses: testutil.ToFloat64(missesTotal),
-		errs:   testutil.ToFloat64(errorsTotal),
+		hits:   testutil.ToFloat64(hitsTotal.WithLabelValues(kindTrack)),
+		misses: testutil.ToFloat64(missesTotal.WithLabelValues(kindTrack)),
+		errs:   testutil.ToFloat64(errorsTotal.WithLabelValues(kindTrack)),
 	}
 }
 
@@ -157,7 +156,7 @@ func TestSearcherTTLDependsOnTagCount(t *testing.T) {
 		for i := 0; i < n; i++ {
 			name := string(rune('a' + i))
 			track.Tags = append(track.Tags, name)
-			track.WeightedTags = append(track.WeightedTags, provider.Tag{Name: name, Count: 1})
+			track.RecordingTags = append(track.RecordingTags, provider.Tag{Name: name, Count: 1})
 		}
 		return track
 	}
@@ -183,21 +182,6 @@ func TestSearcherTTLDependsOnTagCount(t *testing.T) {
 		if ttl := store.ttls[Key("Artist", "Song")]; ttl != tt.want {
 			t.Errorf("%d tags: stored with TTL %v, want %v", tt.tags, ttl, tt.want)
 		}
-	}
-}
-
-func TestSearcherKeepsTagSource(t *testing.T) {
-	upstream := taggedTrack()
-	upstream.TagSource = provider.TagSourceArtist
-	s := newTestSearcher(&countingSearcher{track: upstream}, newMemStore())
-
-	_, _ = s.SearchTrack(context.Background(), "Queen", "Bohemian Rhapsody")
-	cached, err := s.SearchTrack(context.Background(), "Queen", "Bohemian Rhapsody")
-	if err != nil || !cached.Cached {
-		t.Fatalf("second lookup: track=%+v err=%v, want a cache hit", cached, err)
-	}
-	if cached.TagSource != provider.TagSourceArtist {
-		t.Errorf("TagSource = %q after a cache round trip, want %q", cached.TagSource, provider.TagSourceArtist)
 	}
 }
 
@@ -305,11 +289,11 @@ func TestKey(t *testing.T) {
 		artist, title string
 		want          string
 	}{
-		{"Queen", "Bohemian Rhapsody", "track:v2:queen|bohemian+rhapsody"},
-		{"  QUEEN  ", "bohemian   RHAPSODY ", "track:v2:queen|bohemian+rhapsody"},
-		{"AC/DC", "T.N.T.", "track:v2:ac%2Fdc|t.n.t."},
-		{"a|b", "c", "track:v2:a%7Cb|c"},
-		{"a", "b|c", "track:v2:a|b%7Cc"},
+		{"Queen", "Bohemian Rhapsody", "track:v3:queen|bohemian+rhapsody"},
+		{"  QUEEN  ", "bohemian   RHAPSODY ", "track:v3:queen|bohemian+rhapsody"},
+		{"AC/DC", "T.N.T.", "track:v3:ac%2Fdc|t.n.t."},
+		{"a|b", "c", "track:v3:a%7Cb|c"},
+		{"a", "b|c", "track:v3:a|b%7Cc"},
 	}
 
 	for _, tt := range tests {

@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 )
@@ -25,46 +26,67 @@ func newTestClient(t *testing.T, handler http.HandlerFunc, opts ...Option) *Clie
 	return NewClient(testUserAgent, opts...)
 }
 
-func jsonHandler(status int, body string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
-	}
-}
-
-// fakeMB serves a recording search and artist lookups, and records the paths
-// it was asked for.
+// fakeMB stands in for MusicBrainz. It serves the tagged-only search, the
+// plain search and artist lookups, and records every request it receives.
 type fakeMB struct {
-	search       string
-	searchStatus int
-	artists      map[string]string
-	artistStatus int
-	paths        []string
+	mu      sync.Mutex
+	tagged  string            // body for searches restricted with tag:*
+	plain   string            // body for unrestricted searches
+	artists map[string]string // artist MBID -> body
+	// fail lists statuses to answer with before serving normally, one per
+	// request; retryAfter is sent along with them when set.
+	fail       []int
+	retryAfter string
+	requests   []string
 }
 
 func (f *fakeMB) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		f.paths = append(f.paths, r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
+		f.mu.Lock()
+		defer f.mu.Unlock()
 
-		if id, ok := strings.CutPrefix(r.URL.Path, "/artist/"); ok {
-			body, found := f.artists[id]
-			switch {
-			case f.artistStatus != 0:
-				w.WriteHeader(f.artistStatus)
-			case !found:
-				w.WriteHeader(http.StatusNotFound)
+		kind := "plain"
+		id, isArtist := strings.CutPrefix(r.URL.Path, "/artist/")
+		switch {
+		case isArtist:
+			kind = "artist:" + id
+		case strings.Contains(r.URL.Query().Get("query"), "tag:*"):
+			kind = "tagged"
+		}
+		f.requests = append(f.requests, kind)
+
+		w.Header().Set("Content-Type", "application/json")
+		if len(f.fail) > 0 {
+			status := f.fail[0]
+			f.fail = f.fail[1:]
+			if f.retryAfter != "" {
+				w.Header().Set("Retry-After", f.retryAfter)
 			}
-			_, _ = w.Write([]byte(body))
+			w.WriteHeader(status)
 			return
 		}
 
-		if f.searchStatus != 0 {
-			w.WriteHeader(f.searchStatus)
+		body := `{"recordings":[]}`
+		switch {
+		case isArtist:
+			var found bool
+			if body, found = f.artists[id]; !found {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+		case kind == "tagged" && f.tagged != "":
+			body = f.tagged
+		case kind == "plain" && f.plain != "":
+			body = f.plain
 		}
-		_, _ = w.Write([]byte(f.search))
+		_, _ = w.Write([]byte(body))
 	}
+}
+
+func (f *fakeMB) seen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.requests...)
 }
 
 // rec builds one search result. tags is a list of "name:count" pairs.
@@ -84,57 +106,53 @@ func searchBody(recordings ...string) string {
 }
 
 func TestSearchTrack(t *testing.T) {
-	queenTags := `{"tags":[{"name":"Rock","count":9},{"name":"glam rock","count":4}],"genres":[{"name":"rock","count":9}]}`
-
 	tests := []struct {
-		name       string
-		mb         fakeMB
-		artist     string
-		wantErr    error
-		wantAnyErr bool
-		wantTrack  *Track
-		wantPaths  []string
+		name         string
+		mb           *fakeMB
+		artist       string
+		wantErr      error
+		wantAnyErr   bool
+		wantTrack    *Track
+		wantRequests []string
 	}{
 		{
 			name: "merges tags of matching recordings, summing votes",
-			mb: fakeMB{search: searchBody(
+			mb: &fakeMB{tagged: searchBody(
 				rec("rec-b", 100, "Queen", "rock:2", "glam rock:1"),
 				rec("rec-a", 95, "Queen", "Rock:3", " art rock :1"),
-				rec("rec-c", 100, "Queen"),
 			)},
 			wantTrack: &Track{
-				ID: "rec-a", Title: "Song", Artist: "Queen",
-				Tags:         []string{"rock", "art rock", "glam rock"},
-				WeightedTags: []Tag{{"rock", 5}, {"art rock", 1}, {"glam rock", 1}},
-				TagSource:    TagSourceRecording,
+				ID: "rec-a", Title: "Song", Artist: "Queen", ArtistID: "artist-1",
+				Tags:          []string{"rock", "art rock", "glam rock"},
+				RecordingTags: []Tag{{"rock", 5}, {"art rock", 1}, {"glam rock", 1}},
 			},
-			wantPaths: []string{"/recording/"},
+			wantRequests: []string{"tagged"},
 		},
 		{
 			name: "ignores recordings scored below 90",
-			mb: fakeMB{search: searchBody(
+			mb: &fakeMB{tagged: searchBody(
 				rec("rec-low", 89, "Queen", "jazz:50"),
 				rec("rec-ok", 90, "Queen", "rock:1"),
 			)},
 			wantTrack: &Track{
-				ID: "rec-ok", Title: "Song", Artist: "Queen",
-				Tags: []string{"rock"}, WeightedTags: []Tag{{"rock", 1}}, TagSource: TagSourceRecording,
+				ID: "rec-ok", Title: "Song", Artist: "Queen", ArtistID: "artist-1",
+				Tags: []string{"rock"}, RecordingTags: []Tag{{"rock", 1}},
 			},
 		},
 		{
 			name: "ignores recordings by another artist",
-			mb: fakeMB{search: searchBody(
+			mb: &fakeMB{tagged: searchBody(
 				rec("rec-cover", 100, "Queen Tribute Band", "karaoke:50"),
 				rec("rec-ok", 100, "Queen", "rock:1"),
 			)},
 			wantTrack: &Track{
-				ID: "rec-ok", Title: "Song", Artist: "Queen",
-				Tags: []string{"rock"}, WeightedTags: []Tag{{"rock", 1}}, TagSource: TagSourceRecording,
+				ID: "rec-ok", Title: "Song", Artist: "Queen", ArtistID: "artist-1",
+				Tags: []string{"rock"}, RecordingTags: []Tag{{"rock", 1}},
 			},
 		},
 		{
 			name: "merges at most five recordings, the best tagged ones",
-			mb: fakeMB{search: searchBody(
+			mb: &fakeMB{tagged: searchBody(
 				rec("rec-1", 100, "Queen", "rock:1"),
 				rec("rec-2", 100, "Queen", "rock:2"),
 				rec("rec-3", 100, "Queen", "rock:3"),
@@ -144,100 +162,73 @@ func TestSearchTrack(t *testing.T) {
 				rec("rec-7", 100, "Queen", "pop:1"),
 			)},
 			wantTrack: &Track{
-				ID: "rec-6", Title: "Song", Artist: "Queen",
-				// rec-6..rec-2: 6+5+4+3+2. rec-1 and rec-7 tie on votes; neither fits.
-				Tags: []string{"rock"}, WeightedTags: []Tag{{"rock", 20}}, TagSource: TagSourceRecording,
+				ID: "rec-6", Title: "Song", Artist: "Queen", ArtistID: "artist-1",
+				// rec-6..rec-2: 6+5+4+3+2. rec-1 and rec-7 do not fit.
+				Tags: []string{"rock"}, RecordingTags: []Tag{{"rock", 20}},
 			},
 		},
 		{
 			name:   "artist name is compared after normalization",
 			artist: "guns n roses",
-			mb: fakeMB{search: searchBody(
-				rec("rec-1", 100, "Guns N\u2019 Roses", "hard rock:4"),
+			mb:     &fakeMB{tagged: searchBody(rec("rec-1", 100, "Guns N’ Roses", "hard rock:4"))},
+			wantTrack: &Track{
+				ID: "rec-1", Title: "Song", Artist: "Guns N’ Roses", ArtistID: "artist-1",
+				Tags: []string{"hard rock"}, RecordingTags: []Tag{{"hard rock", 4}},
+			},
+		},
+		{
+			name: "score sent as a string is accepted",
+			mb: &fakeMB{tagged: `{"recordings":[{"id":"rec-1","score":"100","title":"Song",
+				"artist-credit":[{"name":"Queen","artist":{"id":"artist-1","name":"Queen"}}],
+				"tags":[{"name":"rock","count":1}]}]}`},
+			wantTrack: &Track{
+				ID: "rec-1", Title: "Song", Artist: "Queen", ArtistID: "artist-1",
+				Tags: []string{"rock"}, RecordingTags: []Tag{{"rock", 1}},
+			},
+		},
+		{
+			name: "no tagged recording: plain search finds the song and its artist",
+			mb: &fakeMB{plain: searchBody(
+				rec("rec-9", 100, "Queen"),
+				rec("rec-2", 100, "Queen"),
+				rec("rec-other", 100, "Someone Else"),
 			)},
-			wantTrack: &Track{
-				ID: "rec-1", Title: "Song", Artist: "Guns N\u2019 Roses",
-				Tags: []string{"hard rock"}, WeightedTags: []Tag{{"hard rock", 4}}, TagSource: TagSourceRecording,
-			},
+			wantTrack:    &Track{ID: "rec-2", Title: "Song", Artist: "Queen", ArtistID: "artist-1"},
+			wantRequests: []string{"tagged", "plain"},
 		},
 		{
-			name: "falls back to artist tags when no matching recording has any",
-			mb: fakeMB{
-				search:  searchBody(rec("rec-1", 100, "Queen"), rec("rec-2", 100, "Queen")),
-				artists: map[string]string{"artist-1": queenTags},
+			name: "tagged recordings that do not match are not used",
+			mb: &fakeMB{
+				tagged: searchBody(rec("rec-low", 50, "Queen", "jazz:9"), rec("rec-other", 100, "Someone Else", "pop:9")),
+				plain:  searchBody(rec("rec-1", 100, "Queen")),
 			},
-			wantTrack: &Track{
-				ID: "rec-1", Title: "Song", Artist: "Queen",
-				Tags:         []string{"rock", "glam rock"},
-				WeightedTags: []Tag{{"rock", 9}, {"glam rock", 4}},
-				TagSource:    TagSourceArtist,
-			},
-			wantPaths: []string{"/recording/", "/artist/artist-1"},
+			wantTrack:    &Track{ID: "rec-1", Title: "Song", Artist: "Queen", ArtistID: "artist-1"},
+			wantRequests: []string{"tagged", "plain"},
 		},
 		{
-			name: "does not use tags of non-matching recordings before falling back",
-			mb: fakeMB{
-				search:  searchBody(rec("rec-low", 50, "Queen", "jazz:9"), rec("rec-1", 100, "Queen")),
-				artists: map[string]string{"artist-1": queenTags},
-			},
-			wantTrack: &Track{
-				ID: "rec-1", Title: "Song", Artist: "Queen",
-				Tags:         []string{"rock", "glam rock"},
-				WeightedTags: []Tag{{"rock", 9}, {"glam rock", 4}},
-				TagSource:    TagSourceArtist,
-			},
-		},
-		{
-			name: "no tags on recordings or artist",
-			mb: fakeMB{
-				search:  searchBody(rec("rec-1", 100, "Queen")),
-				artists: map[string]string{"artist-1": `{"tags":[],"genres":[]}`},
-			},
-			wantTrack: &Track{ID: "rec-1", Title: "Song", Artist: "Queen"},
-		},
-		{
-			name:      "artist unknown to the lookup endpoint means no tags, not an error",
-			mb:        fakeMB{search: searchBody(rec("rec-1", 100, "Queen"))},
-			wantTrack: &Track{ID: "rec-1", Title: "Song", Artist: "Queen"},
-		},
-		{
-			name: "artist fallback failing upstream is an error",
-			mb: fakeMB{
-				search:       searchBody(rec("rec-1", 100, "Queen")),
-				artistStatus: http.StatusServiceUnavailable,
-			},
-			wantErr: ErrUpstream,
-		},
-		{
-			name:    "no recordings",
-			mb:      fakeMB{search: `{"recordings":[]}`},
-			wantErr: ErrNotFound,
+			name:         "no recordings at all",
+			mb:           &fakeMB{},
+			wantErr:      ErrNotFound,
+			wantRequests: []string{"tagged", "plain"},
 		},
 		{
 			name: "recordings exist but none matches",
-			mb: fakeMB{search: searchBody(
-				rec("rec-low", 80, "Queen", "rock:1"),
-				rec("rec-other", 100, "Someone Else", "rock:1"),
+			mb: &fakeMB{plain: searchBody(
+				rec("rec-low", 80, "Queen"),
+				rec("rec-other", 100, "Someone Else"),
 			)},
-			wantErr:   ErrNotFound,
-			wantPaths: []string{"/recording/"},
-		},
-		{
-			name:    "service unavailable",
-			mb:      fakeMB{search: `{"error":"rate limited"}`, searchStatus: http.StatusServiceUnavailable},
-			wantErr: ErrUpstream,
+			wantErr: ErrNotFound,
 		},
 		{
 			name:       "malformed JSON",
-			mb:         fakeMB{search: `{"recordings":`},
+			mb:         &fakeMB{tagged: `{"recordings":`},
 			wantAnyErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mb := tt.mb
-			client := newTestClient(t, mb.handler())
+			client := newTestClient(t, tt.mb.handler())
 
 			artist := tt.artist
 			if artist == "" {
@@ -258,17 +249,256 @@ func TestSearchTrack(t *testing.T) {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
-				want := *tt.wantTrack
-				want.Artist = strings.ReplaceAll(want.Artist, `\u2019`, "\u2019")
-				if !reflect.DeepEqual(track, &want) {
-					t.Errorf("track = %+v\nwant    %+v", track, &want)
+				if !reflect.DeepEqual(track, tt.wantTrack) {
+					t.Errorf("track = %+v\nwant    %+v", track, tt.wantTrack)
 				}
 			}
 
-			if tt.wantPaths != nil && !reflect.DeepEqual(mb.paths, tt.wantPaths) {
-				t.Errorf("requested paths = %v, want %v", mb.paths, tt.wantPaths)
+			if tt.wantRequests != nil && !reflect.DeepEqual(tt.mb.seen(), tt.wantRequests) {
+				t.Errorf("requests = %v, want %v", tt.mb.seen(), tt.wantRequests)
 			}
 		})
+	}
+}
+
+func TestArtistTags(t *testing.T) {
+	mb := &fakeMB{artists: map[string]string{
+		"queen-id": `{"tags":[{"name":"Rock","count":9},{"name":"glam rock","count":4},{"name":"british","count":4}],
+			"genres":[{"name":"rock","count":9},{"name":"art rock","count":2}]}`,
+		"empty-id": `{"tags":[],"genres":[]}`,
+	}}
+	client := newTestClient(t, mb.handler())
+
+	got, err := client.ArtistTags(context.Background(), "queen-id")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Genres repeat tags and must not double the votes; order is by votes, then name.
+	want := []Tag{{"rock", 9}, {"british", 4}, {"glam rock", 4}, {"art rock", 2}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("tags = %v, want %v", got, want)
+	}
+
+	for _, id := range []string{"empty-id", "unknown-id"} {
+		got, err := client.ArtistTags(context.Background(), id)
+		if err != nil || len(got) != 0 {
+			t.Errorf("ArtistTags(%q) = %v, %v; want no tags and no error", id, got, err)
+		}
+	}
+
+	if want := []string{"artist:queen-id", "artist:empty-id", "artist:unknown-id"}; !reflect.DeepEqual(mb.seen(), want) {
+		t.Errorf("requests = %v, want lookups by MBID %v", mb.seen(), want)
+	}
+}
+
+func TestArtistTagsRequest(t *testing.T) {
+	var got *http.Request
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r
+		_, _ = w.Write([]byte(`{"tags":[]}`))
+	})
+
+	if _, err := client.ArtistTags(context.Background(), "0383dadf-2a4e-4d10-a46a-e9e041da8eb3"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.URL.Path != "/artist/0383dadf-2a4e-4d10-a46a-e9e041da8eb3" {
+		t.Errorf("path = %q, want a lookup by MBID", got.URL.Path)
+	}
+	if inc := got.URL.Query().Get("inc"); inc != "tags genres" {
+		t.Errorf("inc = %q, want %q", inc, "tags genres")
+	}
+	if got.URL.Query().Has("query") {
+		t.Error("artist tags were requested through search, want a lookup")
+	}
+}
+
+func TestRetry(t *testing.T) {
+	ok := searchBody(rec("rec-1", 100, "Queen", "rock:1"))
+
+	tests := []struct {
+		name         string
+		fail         []int
+		wantErr      bool
+		wantStatus   int
+		wantRequests int
+	}{
+		{name: "one 503 is retried and succeeds", fail: []int{503}, wantRequests: 2},
+		{name: "two 503s give up after one retry", fail: []int{503, 503, 503}, wantErr: true, wantStatus: 503, wantRequests: 2},
+		{name: "500 is not retried", fail: []int{500}, wantErr: true, wantStatus: 500, wantRequests: 1},
+		{name: "429 is not retried", fail: []int{429}, wantErr: true, wantStatus: 429, wantRequests: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mb := &fakeMB{tagged: ok, fail: tt.fail}
+			client := newTestClient(t, mb.handler())
+
+			_, err := client.SearchTrack(context.Background(), "Queen", "Song")
+
+			if got := len(mb.seen()); got != tt.wantRequests {
+				t.Errorf("%d requests sent, want %d", got, tt.wantRequests)
+			}
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			var upstream *UpstreamError
+			if !errors.As(err, &upstream) || !errors.Is(err, ErrUpstream) {
+				t.Fatalf("error = %v, want an *UpstreamError matching ErrUpstream", err)
+			}
+			if upstream.Status != tt.wantStatus {
+				t.Errorf("status = %d, want %d", upstream.Status, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestRetryOnNetworkError(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		requests int
+	)
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		first := requests == 1
+		mu.Unlock()
+
+		if first {
+			// Drop the connection without answering.
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				if tcp, ok := conn.(*net.TCPConn); ok {
+					_ = tcp.SetLinger(0)
+				}
+				_ = conn.Close()
+			}
+			return
+		}
+		_, _ = w.Write([]byte(searchBody(rec("rec-1", 100, "Queen", "rock:1"))))
+	})
+
+	track, err := client.SearchTrack(context.Background(), "Queen", "Song")
+	if err != nil {
+		t.Fatalf("a dropped connection was not retried: %v", err)
+	}
+	if track.ID != "rec-1" || requests != 2 {
+		t.Errorf("track = %+v after %d requests, want rec-1 after 2", track, requests)
+	}
+}
+
+func TestRetryAfterIsHonouredButCapped(t *testing.T) {
+	tests := []struct {
+		name       string
+		header     string
+		cap        time.Duration
+		wantWait   time.Duration
+		wantReport time.Duration
+	}{
+		{name: "short Retry-After is waited out", header: "1", cap: 3 * time.Second, wantWait: time.Second, wantReport: time.Second},
+		{name: "long Retry-After is capped", header: "120", cap: 200 * time.Millisecond, wantWait: 200 * time.Millisecond, wantReport: 120 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mb := &fakeMB{fail: []int{503, 503}, retryAfter: tt.header}
+			client := newTestClient(t, mb.handler())
+			client.maxRetryAfter = tt.cap
+
+			start := time.Now()
+			_, err := client.SearchTrack(context.Background(), "Queen", "Song")
+			elapsed := time.Since(start)
+
+			if elapsed < tt.wantWait {
+				t.Errorf("retry came after %v, want at least %v", elapsed, tt.wantWait)
+			}
+			if elapsed > tt.wantWait+2*time.Second {
+				t.Errorf("retry came after %v, want about %v", elapsed, tt.wantWait)
+			}
+
+			var upstream *UpstreamError
+			if !errors.As(err, &upstream) {
+				t.Fatalf("error = %v, want an *UpstreamError", err)
+			}
+			if upstream.RetryAfter != tt.wantReport {
+				t.Errorf("reported RetryAfter = %v, want the server's own %v", upstream.RetryAfter, tt.wantReport)
+			}
+		})
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		value string
+		want  time.Duration
+	}{
+		{"", 0},
+		{"5", 5 * time.Second},
+		{" 2 ", 2 * time.Second},
+		{"0", 0},
+		{"-3", 0},
+		{"soon", 0},
+		{"Mon, 12 Oct 2026 12:00:10 GMT", 10 * time.Second},
+		{"Mon, 12 Oct 2026 11:59:00 GMT", 0},
+	}
+	for _, tt := range tests {
+		if got := parseRetryAfter(tt.value, now); got != tt.want {
+			t.Errorf("parseRetryAfter(%q) = %v, want %v", tt.value, got, tt.want)
+		}
+	}
+}
+
+// TestRateIntervalRunsFromEndOfResponse checks that the pause is measured
+// from the moment the previous response finished, not from when its request
+// started: with a slow server the two differ by the response time.
+func TestRateIntervalRunsFromEndOfResponse(t *testing.T) {
+	const (
+		interval     = 150 * time.Millisecond
+		responseTime = 200 * time.Millisecond
+	)
+
+	var (
+		mu     sync.Mutex
+		starts []time.Time
+		ends   []time.Time
+	)
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		starts = append(starts, time.Now())
+		mu.Unlock()
+
+		time.Sleep(responseTime)
+		_, _ = w.Write([]byte(searchBody(rec("rec-1", 100, "Queen", "rock:1"))))
+
+		mu.Lock()
+		ends = append(ends, time.Now())
+		mu.Unlock()
+	}, WithRateInterval(interval))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := client.SearchTrack(context.Background(), "Queen", "Song"); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(starts) != 3 {
+		t.Fatalf("server saw %d requests, want 3", len(starts))
+	}
+	for i := 1; i < len(starts); i++ {
+		// The handler's "end" is taken just before the client sees the body,
+		// so allow a little slack.
+		if gap := starts[i].Sub(ends[i-1]); gap < interval-20*time.Millisecond {
+			t.Errorf("request %d started %v after the previous response ended, want at least %v", i, gap, interval)
+		}
 	}
 }
 
@@ -289,7 +519,7 @@ func TestSearchTrackIsStableUnderResultReordering(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		rng.Shuffle(len(recordings), func(a, b int) { recordings[a], recordings[b] = recordings[b], recordings[a] })
 
-		mb := fakeMB{search: searchBody(recordings...)}
+		mb := &fakeMB{tagged: searchBody(recordings...)}
 		track, err := newTestClient(t, mb.handler()).SearchTrack(context.Background(), "Queen", "Song")
 		if err != nil {
 			t.Fatalf("shuffle %d: %v", i, err)
@@ -341,7 +571,7 @@ func TestSearchTrackMatchesAnyCreditedArtistOrTheWholeCredit(t *testing.T) {
 		"tags":[{"name":"rock","count":2}]}]}`
 
 	for _, artist := range []string{"Queen", "david bowie", "Queen & David Bowie", "queen and david bowie"} {
-		mb := fakeMB{search: body}
+		mb := &fakeMB{tagged: body}
 		track, err := newTestClient(t, mb.handler()).SearchTrack(context.Background(), artist, "Under Pressure")
 		if err != nil {
 			t.Errorf("artist %q: %v", artist, err)
@@ -352,7 +582,7 @@ func TestSearchTrackMatchesAnyCreditedArtistOrTheWholeCredit(t *testing.T) {
 		}
 	}
 
-	mb := fakeMB{search: body}
+	mb := &fakeMB{tagged: body}
 	if _, err := newTestClient(t, mb.handler()).SearchTrack(context.Background(), "Freddie Mercury", "Under Pressure"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("uncredited artist: error = %v, want ErrNotFound", err)
 	}
@@ -361,55 +591,39 @@ func TestSearchTrackMatchesAnyCreditedArtistOrTheWholeCredit(t *testing.T) {
 const okSearch = `{"recordings":[{"id":"x","score":100,"artist-credit":[{"name":"a","artist":{"id":"a-id","name":"a"}}],"tags":[{"name":"rock","count":1}]}]}`
 
 func TestSearchTrackRequest(t *testing.T) {
-	var got *http.Request
+	var got []*http.Request
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		got = r
-		jsonHandler(http.StatusOK, `{"recordings":[]}`)(w, r)
+		got = append(got, r)
+		_, _ = w.Write([]byte(`{"recordings":[]}`))
 	})
 
 	_, _ = client.SearchTrack(context.Background(), `AC/DC "live"`, `Back\In Black`)
 
-	if got.URL.Path != "/recording/" {
-		t.Errorf("path = %q, want /recording/", got.URL.Path)
+	if len(got) != 2 {
+		t.Fatalf("%d requests sent, want the tagged search and then the plain one", len(got))
 	}
-	if ua := got.Header.Get("User-Agent"); ua != testUserAgent {
-		t.Errorf("User-Agent = %q, want %q", ua, testUserAgent)
+	base := `artist:"AC/DC \"live\"" AND recording:"Back\\In Black"`
+	wants := []struct{ query, limit string }{
+		{base + " AND tag:*", "100"},
+		{base, "25"},
 	}
-	if accept := got.Header.Get("Accept"); accept != "application/json" {
-		t.Errorf("Accept = %q, want application/json", accept)
-	}
-
-	q := got.URL.Query()
-	wantQuery := `artist:"AC/DC \"live\"" AND recording:"Back\\In Black"`
-	if q.Get("query") != wantQuery {
-		t.Errorf("query = %q, want %q", q.Get("query"), wantQuery)
-	}
-	for key, want := range map[string]string{"fmt": "json", "limit": "100"} {
-		if q.Get(key) != want {
-			t.Errorf("%s = %q, want %q", key, q.Get(key), want)
+	for i, r := range got {
+		if r.URL.Path != "/recording/" {
+			t.Errorf("request %d: path = %q, want /recording/", i, r.URL.Path)
 		}
-	}
-}
-
-func TestArtistFallbackIsRateLimitedToo(t *testing.T) {
-	const interval = 150 * time.Millisecond
-
-	mb := fakeMB{
-		search:  searchBody(rec("rec-1", 100, "Queen")),
-		artists: map[string]string{"artist-1": `{"tags":[{"name":"rock","count":1}]}`},
-	}
-	client := newTestClient(t, mb.handler(), WithRateInterval(interval))
-
-	start := time.Now()
-	track, err := client.SearchTrack(context.Background(), "Queen", "Song")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if track.TagSource != TagSourceArtist {
-		t.Fatalf("TagSource = %q, want artist fallback", track.TagSource)
-	}
-	if elapsed := time.Since(start); elapsed < interval {
-		t.Errorf("search and artist lookup took %v, want them at least %v apart", elapsed, interval)
+		if ua := r.Header.Get("User-Agent"); ua != testUserAgent {
+			t.Errorf("request %d: User-Agent = %q, want %q", i, ua, testUserAgent)
+		}
+		if accept := r.Header.Get("Accept"); accept != "application/json" {
+			t.Errorf("request %d: Accept = %q, want application/json", i, accept)
+		}
+		q := r.URL.Query()
+		if q.Get("query") != wants[i].query {
+			t.Errorf("request %d: query = %q, want %q", i, q.Get("query"), wants[i].query)
+		}
+		if q.Get("limit") != wants[i].limit || q.Get("fmt") != "json" {
+			t.Errorf("request %d: limit = %q fmt = %q, want %s and json", i, q.Get("limit"), q.Get("fmt"), wants[i].limit)
+		}
 	}
 }
 
@@ -432,12 +646,13 @@ func TestSearchTrackClientTimeout(t *testing.T) {
 	start := time.Now()
 	_, err := client.SearchTrack(context.Background(), "Queen", "Bohemian Rhapsody")
 
-	if err == nil {
-		t.Fatal("expected a timeout error, got nil")
+	if !errors.Is(err, ErrUpstream) {
+		t.Errorf("error = %v, want one matching ErrUpstream", err)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("error = %v, want context.DeadlineExceeded", err)
+		t.Errorf("error = %v, want it to wrap context.DeadlineExceeded", err)
 	}
+	// One timed-out attempt plus one timed-out retry.
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("request took %v, timeout was not applied", elapsed)
 	}
@@ -449,41 +664,24 @@ func TestSearchTrackContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
+	start := time.Now()
 	_, err := client.SearchTrack(ctx, "Queen", "Bohemian Rhapsody")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("error = %v, want context.DeadlineExceeded", err)
 	}
-}
-
-func TestSearchTrackRateLimit(t *testing.T) {
-	const interval = 150 * time.Millisecond
-
-	var calls atomic.Int32
-	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		jsonHandler(http.StatusOK, okSearch)(w, r)
-	}, WithRateInterval(interval))
-
-	start := time.Now()
-	for i := 0; i < 3; i++ {
-		if _, err := client.SearchTrack(context.Background(), "a", "b"); err != nil {
-			t.Fatalf("call %d: unexpected error: %v", i, err)
-		}
-	}
-
-	if elapsed := time.Since(start); elapsed < 2*interval {
-		t.Errorf("3 requests took %v, want at least %v", elapsed, 2*interval)
-	}
-	if got := calls.Load(); got != 3 {
-		t.Errorf("server saw %d requests, want 3", got)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("took %v: an expired request must not be retried", elapsed)
 	}
 }
 
-func TestSearchTrackRateLimitHonoursContext(t *testing.T) {
-	var calls atomic.Int32
+func TestRateLimitQueueHonoursContext(t *testing.T) {
+	var requests int
+	var mu sync.Mutex
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		jsonHandler(http.StatusOK, okSearch)(w, r)
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		_, _ = w.Write([]byte(okSearch))
 	}, WithRateInterval(time.Hour))
 
 	if _, err := client.SearchTrack(context.Background(), "a", "b"); err != nil {
@@ -497,7 +695,14 @@ func TestSearchTrackRateLimitHonoursContext(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("error = %v, want context.DeadlineExceeded", err)
 	}
-	if got := calls.Load(); got != 1 {
-		t.Errorf("server saw %d requests, want 1 (second must not be sent)", got)
+	if requests != 1 {
+		t.Errorf("server saw %d requests, want 1 (second must not be sent)", requests)
+	}
+
+	// The abandoned turn must be handed back, or the limiter is stuck forever.
+	select {
+	case <-client.limiter.slot:
+	default:
+		t.Error("limiter slot was not returned after a cancelled wait")
 	}
 }

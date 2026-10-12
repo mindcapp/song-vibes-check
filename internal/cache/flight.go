@@ -5,16 +5,17 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
-
-	"song-similarity/internal/provider"
 )
 
 // flightGroup makes concurrent lookups of the same key share one execution,
 // so a burst of identical cache misses costs a single upstream request.
-type flightGroup struct {
+type flightGroup[T any] struct {
 	mu    sync.Mutex
-	calls map[string]*flight
+	calls map[string]*flight[T]
 
+	// clone copies a result for one caller. The value produced by a run is
+	// shared by all of its waiters and is never handed out directly.
+	clone func(T) T
 	// joined, if set, is called (with the group locked) each time a caller
 	// attaches to a flight: leader is true for the caller that started it.
 	joined func(leader bool)
@@ -22,15 +23,14 @@ type flightGroup struct {
 	onPanic func(key string, recovered any, stack []byte)
 }
 
-type flight struct {
+type flight[T any] struct {
 	done    chan struct{}
 	cancel  context.CancelFunc
 	waiters int
 
-	// track and err are written once, before done is closed, and never
-	// modified afterwards. track is shared by all waiters and must not be
-	// handed out directly: do returns a copy to each caller.
-	track *provider.Track
+	// value and err are written once, before done is closed, and never
+	// modified afterwards.
+	value T
 	err   error
 }
 
@@ -42,20 +42,21 @@ type flight struct {
 // waiting on it has gone. A caller whose own ctx ends returns ctx.Err()
 // straight away, without waiting for the run to finish.
 //
-// Each caller gets its own copy of the resulting track.
-func (g *flightGroup) do(ctx context.Context, key string, fn func(context.Context) (*provider.Track, error)) (*provider.Track, error) {
+// Each caller gets its own copy of the result.
+func (g *flightGroup[T]) do(ctx context.Context, key string, fn func(context.Context) (T, error)) (T, error) {
+	var zero T
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return zero, err
 	}
 
 	g.mu.Lock()
 	if g.calls == nil {
-		g.calls = make(map[string]*flight)
+		g.calls = make(map[string]*flight[T])
 	}
 	f, running := g.calls[key]
 	if !running {
 		flightCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		f = &flight{done: make(chan struct{}), cancel: cancel}
+		f = &flight[T]{done: make(chan struct{}), cancel: cancel}
 		g.calls[key] = f
 		go g.run(flightCtx, key, f, fn)
 	}
@@ -68,19 +69,19 @@ func (g *flightGroup) do(ctx context.Context, key string, fn func(context.Contex
 	select {
 	case <-f.done:
 		if f.err != nil {
-			return nil, f.err
+			return zero, f.err
 		}
-		return f.track.Clone(), nil
+		return g.clone(f.value), nil
 	case <-ctx.Done():
 		g.leave(key, f)
-		return nil, ctx.Err()
+		return zero, ctx.Err()
 	}
 }
 
 // leave detaches one waiter. When the last one goes, the run is cancelled and
 // the key is freed at once, so a later caller starts a fresh run rather than
 // joining one that is being torn down.
-func (g *flightGroup) leave(key string, f *flight) {
+func (g *flightGroup[T]) leave(key string, f *flight[T]) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -94,12 +95,13 @@ func (g *flightGroup) leave(key string, f *flight) {
 	f.cancel()
 }
 
-func (g *flightGroup) run(ctx context.Context, key string, f *flight, fn func(context.Context) (*provider.Track, error)) {
+func (g *flightGroup[T]) run(ctx context.Context, key string, f *flight[T], fn func(context.Context) (T, error)) {
 	defer func() {
 		if r := recover(); r != nil {
-			f.track, f.err = nil, fmt.Errorf("cache: lookup panicked: %v", r)
+			var zero T
+			f.value, f.err = zero, fmt.Errorf("cache: lookup panicked: %v", r)
 			if g.onPanic != nil {
-				g.onPanic(key, r, debug.Stack())
+				g.onPanic(key, fmt.Sprint(r), debug.Stack())
 			}
 		}
 
@@ -114,5 +116,5 @@ func (g *flightGroup) run(ctx context.Context, key string, f *flight, fn func(co
 		close(f.done)
 	}()
 
-	f.track, f.err = fn(ctx)
+	f.value, f.err = fn(ctx)
 }

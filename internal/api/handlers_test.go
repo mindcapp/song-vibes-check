@@ -34,12 +34,12 @@ func (f *fakeSearcher) SearchTrack(_ context.Context, artist, title string) (*pr
 	return nil, provider.ErrNotFound
 }
 
-func track(weighted ...provider.Tag) *provider.Track {
-	names := make([]string, len(weighted))
-	for i, t := range weighted {
+func track(recording ...provider.Tag) *provider.Track {
+	names := make([]string, len(recording))
+	for i, t := range recording {
 		names[i] = t.Name
 	}
-	return &provider.Track{Tags: names, WeightedTags: weighted}
+	return &provider.Track{Tags: names, RecordingTags: recording, TagSource: provider.TagSourceRecording}
 }
 
 func newTestRouter(t *testing.T, searcher TrackSearcher) http.Handler {
@@ -91,6 +91,8 @@ func TestCompareResponse(t *testing.T) {
 		SharedTags    []string `json:"shared_tags"`
 		OnlyA         []string `json:"only_a"`
 		OnlyB         []string `json:"only_b"`
+		TagSourceA    string   `json:"tag_source_a"`
+		TagSourceB    string   `json:"tag_source_b"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -126,6 +128,62 @@ func TestCompareResponse(t *testing.T) {
 	}
 	if want := []string{"trap"}; !reflect.DeepEqual(got.OnlyB, want) {
 		t.Errorf("only_b = %v, want %v", got.OnlyB, want)
+	}
+	if got.TagSourceA != "recording" || got.TagSourceB != "recording" {
+		t.Errorf("tag sources = %q / %q, want recording / recording", got.TagSourceA, got.TagSourceB)
+	}
+}
+
+func TestCompareWeighsArtistTagsAtHalf(t *testing.T) {
+	mixed := &provider.Track{
+		Tags:          []string{"rock", "jazz", "pop"},
+		RecordingTags: []provider.Tag{{Name: "rock", Count: 1}, {Name: "jazz", Count: 1}},
+		// Many more votes than the recording tags: only shares must matter.
+		ArtistTags: []provider.Tag{{Name: "rock", Count: 50}, {Name: "pop", Count: 50}},
+		TagSource:  provider.TagSourceMixed,
+	}
+	byArtist := &provider.Track{
+		Tags:       []string{"rock", "pop"},
+		ArtistTags: []provider.Tag{{Name: "rock", Count: 3}, {Name: "pop", Count: 1}},
+		TagSource:  provider.TagSourceArtist,
+	}
+	searcher := &fakeSearcher{tracks: map[string]*provider.Track{"A/One": mixed, "B/Two": byArtist}}
+
+	rec := postCompare(t, newTestRouter(t, searcher), compareBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+
+	var got struct {
+		GenreScore    float64  `json:"genre_score"`
+		WeightedScore float64  `json:"weighted_score"`
+		SharedTags    []string `json:"shared_tags"`
+		OnlyA         []string `json:"only_a"`
+		TagSourceA    string   `json:"tag_source_a"`
+		TagSourceB    string   `json:"tag_source_b"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// A: recording shares rock .5, jazz .5; artist shares rock .5, pop .5 at half
+	//    weight -> rock .75, jazz .5, pop .25 (total 1.5) -> .5, .333, .167.
+	// B: rock .75, pop .25 (the 0.5 weight cancels out when it is the only source).
+	// min: rock .5 + pop .167 = .667; max: rock .75 + jazz .333 + pop .25 = 1.333.
+	if want := (0.5 + 0.25/1.5) / (0.75 + 0.5/1.5 + 0.25); math.Abs(got.WeightedScore-want) > 1e-9 {
+		t.Errorf("weighted_score = %v, want %v", got.WeightedScore, want)
+	}
+	if want := 2.0 / 3.0; math.Abs(got.GenreScore-want) > 1e-9 {
+		t.Errorf("genre_score = %v, want %v", got.GenreScore, want)
+	}
+	if want := []string{"rock", "pop"}; !reflect.DeepEqual(got.SharedTags, want) {
+		t.Errorf("shared_tags = %v, want %v", got.SharedTags, want)
+	}
+	if want := []string{"jazz"}; !reflect.DeepEqual(got.OnlyA, want) {
+		t.Errorf("only_a = %v, want %v", got.OnlyA, want)
+	}
+	if got.TagSourceA != "mixed" || got.TagSourceB != "artist" {
+		t.Errorf("tag sources = %q / %q, want mixed / artist", got.TagSourceA, got.TagSourceB)
 	}
 }
 

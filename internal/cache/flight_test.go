@@ -82,7 +82,7 @@ func TestConcurrentMissesShareOneUpstreamCall(t *testing.T) {
 	next := newGatedSearcher(taggedTrack(), nil)
 	s := NewSearcher(next, newMemStore(), testConfig, quietLogger())
 	joined := joinSignal(s)
-	missesBefore, coalescedBefore := testutil.ToFloat64(missesTotal), testutil.ToFloat64(coalescedTotal)
+	missesBefore, coalescedBefore := testutil.ToFloat64(missesTotal.WithLabelValues(kindTrack)), testutil.ToFloat64(coalescedTotal.WithLabelValues(kindTrack))
 
 	var (
 		wg      sync.WaitGroup
@@ -103,7 +103,7 @@ func TestConcurrentMissesShareOneUpstreamCall(t *testing.T) {
 			// is a data race and the checks below fail.
 			track.Title = fmt.Sprintf("mine-%d", i)
 			track.Tags[0] = fmt.Sprintf("tag-%d", i)
-			track.WeightedTags[0].Count = i
+			track.RecordingTags[0].Count = i
 			track.Tags = append(track.Tags, "extra")
 		}(i)
 	}
@@ -123,15 +123,15 @@ func TestConcurrentMissesShareOneUpstreamCall(t *testing.T) {
 			t.Fatalf("caller %d: %v", i, r.err)
 		}
 		if r.track.Title != fmt.Sprintf("mine-%d", i) || r.track.Tags[0] != fmt.Sprintf("tag-%d", i) ||
-			r.track.WeightedTags[0].Count != i || len(r.track.Tags) != 4 {
+			r.track.RecordingTags[0].Count != i || len(r.track.Tags) != 4 {
 			t.Errorf("caller %d sees another caller's changes: %+v", i, r.track)
 		}
 	}
 
-	if got := testutil.ToFloat64(missesTotal) - missesBefore; got != 1 {
+	if got := testutil.ToFloat64(missesTotal.WithLabelValues(kindTrack)) - missesBefore; got != 1 {
 		t.Errorf("cache_misses_total grew by %v, want 1 (the leader only)", got)
 	}
-	if got := testutil.ToFloat64(coalescedTotal) - coalescedBefore; got != callers-1 {
+	if got := testutil.ToFloat64(coalescedTotal.WithLabelValues(kindTrack)) - coalescedBefore; got != callers-1 {
 		t.Errorf("cache_coalesced_total grew by %v, want %d", got, callers-1)
 	}
 
@@ -139,7 +139,7 @@ func TestConcurrentMissesShareOneUpstreamCall(t *testing.T) {
 	cached, err := s.SearchTrack(context.Background(), "Queen", "Bohemian Rhapsody")
 	want := taggedTrack()
 	want.Cached = true
-	if err != nil || cached.Title != want.Title || len(cached.Tags) != 3 || cached.Tags[0] != "rock" || cached.WeightedTags[0].Count != 7 {
+	if err != nil || cached.Title != want.Title || len(cached.Tags) != 3 || cached.Tags[0] != "rock" || cached.RecordingTags[0].Count != 7 {
 		t.Errorf("cached track = %+v (err %v), want the original %+v", cached, err, want)
 	}
 }
