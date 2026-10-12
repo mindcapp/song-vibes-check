@@ -11,6 +11,7 @@ import (
 
 	"song-similarity/internal/provider"
 	"song-similarity/internal/similarity"
+	"song-similarity/internal/tags"
 )
 
 type TrackSearcher interface {
@@ -19,11 +20,12 @@ type TrackSearcher interface {
 
 // Handlers holds the dependencies used by the HTTP handlers.
 type Handlers struct {
-	searcher TrackSearcher
+	searcher   TrackSearcher
+	normalizer *tags.Normalizer
 }
 
-func NewHandlers(searcher TrackSearcher) *Handlers {
-	return &Handlers{searcher: searcher}
+func NewHandlers(searcher TrackSearcher, normalizer *tags.Normalizer) *Handlers {
+	return &Handlers{searcher: searcher, normalizer: normalizer}
 }
 
 type songRequest struct {
@@ -36,10 +38,17 @@ type compareRequest struct {
 	SongB songRequest `json:"song_b"`
 }
 
+// compareResponse is the POST /compare payload. tags_a and tags_b are the
+// tags exactly as MusicBrainz returned them; every other field is computed
+// from the normalized tags (synonyms merged, stop-listed tags dropped).
 type compareResponse struct {
-	GenreScore float64  `json:"genre_score"`
-	TagsA      []string `json:"tags_a"`
-	TagsB      []string `json:"tags_b"`
+	GenreScore    float64  `json:"genre_score"`
+	WeightedScore float64  `json:"weighted_score"`
+	TagsA         []string `json:"tags_a"`
+	TagsB         []string `json:"tags_b"`
+	SharedTags    []string `json:"shared_tags"`
+	OnlyA         []string `json:"only_a"`
+	OnlyB         []string `json:"only_b"`
 }
 
 type errorResponse struct {
@@ -80,14 +89,33 @@ func (h *Handlers) Compare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	score := similarity.CompareGenres(trackA.Tags, trackB.Tags)
-	addLogAttr(r.Context(), slog.Float64("genre_score", score))
+	result := similarity.Compare(h.profile(trackA), h.profile(trackB))
+	addLogAttr(r.Context(), slog.Float64("genre_score", result.GenreScore))
+	addLogAttr(r.Context(), slog.Float64("weighted_score", result.WeightedScore))
 
 	writeJSON(w, http.StatusOK, compareResponse{
-		GenreScore: score,
-		TagsA:      trackA.Tags,
-		TagsB:      trackB.Tags,
+		GenreScore:    result.GenreScore,
+		WeightedScore: result.WeightedScore,
+		TagsA:         trackA.Tags,
+		TagsB:         trackB.Tags,
+		SharedTags:    result.Shared,
+		OnlyA:         result.OnlyA,
+		OnlyB:         result.OnlyB,
 	})
+}
+
+// profile turns a track's raw tags into normalized tag -> vote count. Votes
+// of tags that normalize to the same name ("hip hop", "hip-hop") are summed.
+func (h *Handlers) profile(track *provider.Track) map[string]int {
+	profile := make(map[string]int, len(track.WeightedTags))
+	for _, t := range track.WeightedTags {
+		name, ok := h.normalizer.Normalize(t.Name)
+		if !ok {
+			continue
+		}
+		profile[name] += max(t.Count, 1)
+	}
+	return profile
 }
 
 type healthResponse struct {

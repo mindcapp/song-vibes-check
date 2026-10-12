@@ -46,13 +46,18 @@ func TestSearchTrack(t *testing.T) {
 				"id":"rec-1","title":"Bohemian Rhapsody",
 				"artist-credit":[{"name":"Queen"}],
 				"tags":[{"name":"Rock","count":5},{"name":" glam rock ","count":2}],
-				"genres":[{"name":"rock","count":5},{"name":"progressive rock","count":1}]
+				"genres":[{"name":"rock","count":7},{"name":"progressive rock","count":1}]
 			}]}`,
 			wantTrack: &Track{
 				ID:     "rec-1",
 				Title:  "Bohemian Rhapsody",
 				Artist: "Queen",
 				Tags:   []string{"rock", "glam rock", "progressive rock"},
+				WeightedTags: []Tag{
+					{Name: "rock", Count: 7},
+					{Name: "glam rock", Count: 2},
+					{Name: "progressive rock", Count: 1},
+				},
 			},
 		},
 		{
@@ -62,7 +67,10 @@ func TestSearchTrack(t *testing.T) {
 				{"id":"rec-live","title":"Song (live)","artist-credit":[{"name":"Band"}]},
 				{"id":"rec-studio","title":"Song","artist-credit":[{"name":"Band"}],"tags":[{"name":"jazz","count":1}]}
 			]}`,
-			wantTrack: &Track{ID: "rec-studio", Title: "Song", Artist: "Band", Tags: []string{"jazz"}},
+			wantTrack: &Track{
+				ID: "rec-studio", Title: "Song", Artist: "Band",
+				Tags: []string{"jazz"}, WeightedTags: []Tag{{Name: "jazz", Count: 1}},
+			},
 		},
 		{
 			name:      "recording without tags",
@@ -71,10 +79,13 @@ func TestSearchTrack(t *testing.T) {
 			wantTrack: &Track{ID: "rec-2", Title: "Obscure", Artist: "Nobody", Tags: nil},
 		},
 		{
-			name:      "falls back to requested artist when credit is missing",
-			status:    http.StatusOK,
-			body:      `{"recordings":[{"id":"rec-3","title":"Solo","tags":[{"name":"pop","count":1}]}]}`,
-			wantTrack: &Track{ID: "rec-3", Title: "Solo", Artist: "Queen", Tags: []string{"pop"}},
+			name:   "falls back to requested artist when credit is missing",
+			status: http.StatusOK,
+			body:   `{"recordings":[{"id":"rec-3","title":"Solo","tags":[{"name":"pop","count":1}]}]}`,
+			wantTrack: &Track{
+				ID: "rec-3", Title: "Solo", Artist: "Queen",
+				Tags: []string{"pop"}, WeightedTags: []Tag{{Name: "pop", Count: 1}},
+			},
 		},
 		{
 			name:    "no recordings",

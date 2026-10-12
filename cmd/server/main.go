@@ -12,6 +12,7 @@ import (
 
 	"song-similarity/internal/api"
 	"song-similarity/internal/provider"
+	"song-similarity/internal/tags"
 )
 
 const defaultUserAgent = "song-similarity/0.1.0 ( https://example.com/song-similarity )"
@@ -24,8 +25,14 @@ func main() {
 		userAgent = defaultUserAgent
 	}
 
+	normalizer, err := tags.Load(os.Getenv("TAG_STOPLIST_FILE"))
+	if err != nil {
+		logger.Error("failed to load tag configuration", "error", err.Error())
+		os.Exit(1)
+	}
+
 	mbClient := provider.NewClient(userAgent)
-	handlers := api.NewHandlers(mbClient)
+	handlers := api.NewHandlers(mbClient, normalizer)
 	router := api.NewRouter(handlers, logger)
 
 	srv := &http.Server{
