@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	searchURL        = "https://musicbrainz.org/ws/2/recording/"
+	defaultBaseURL   = "https://musicbrainz.org/ws/2/recording/"
 	defaultRateLimit = time.Second
 	defaultTimeout   = 10 * time.Second
 )
@@ -37,18 +37,42 @@ type Track struct {
 type Client struct {
 	httpClient *http.Client
 	userAgent  string
+	baseURL    string
 	limiter    *rateLimiter
+}
+
+// Option customises a Client.
+type Option func(*Client)
+
+// WithBaseURL overrides the MusicBrainz recording search endpoint.
+func WithBaseURL(baseURL string) Option {
+	return func(c *Client) { c.baseURL = baseURL }
+}
+
+// WithRateInterval overrides the minimum interval between outgoing requests.
+func WithRateInterval(interval time.Duration) Option {
+	return func(c *Client) { c.limiter.interval = interval }
+}
+
+// WithTimeout overrides the per-request HTTP timeout.
+func WithTimeout(timeout time.Duration) Option {
+	return func(c *Client) { c.httpClient.Timeout = timeout }
 }
 
 // NewClient builds a MusicBrainz client. userAgent must follow MusicBrainz's
 // requirements (app name, version and contact info), e.g.
 // "song-similarity/0.1.0 ( contact@example.com )".
-func NewClient(userAgent string) *Client {
-	return &Client{
+func NewClient(userAgent string, opts ...Option) *Client {
+	c := &Client{
 		httpClient: &http.Client{Timeout: defaultTimeout},
 		userAgent:  userAgent,
+		baseURL:    defaultBaseURL,
 		limiter:    &rateLimiter{interval: defaultRateLimit},
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // SearchTrack looks up a recording by artist and title and returns its genre/folksonomy tags.
@@ -57,7 +81,7 @@ func (c *Client) SearchTrack(ctx context.Context, artist, title string) (*Track,
 		return nil, err
 	}
 
-	reqURL, err := buildSearchURL(artist, title)
+	reqURL, err := buildSearchURL(c.baseURL, artist, title)
 	if err != nil {
 		return nil, fmt.Errorf("musicbrainz: build request: %w", err)
 	}
@@ -115,8 +139,8 @@ func bestRecording(recordings []recordingResult) recordingResult {
 	return recordings[0]
 }
 
-func buildSearchURL(artist, title string) (string, error) {
-	u, err := url.Parse(searchURL)
+func buildSearchURL(baseURL, artist, title string) (string, error) {
+	u, err := url.Parse(baseURL)
 	if err != nil {
 		return "", err
 	}
