@@ -13,6 +13,32 @@ var ErrInvalidToken = errors.New("invalid or expired token")
 
 const defaultTokenTTL = 24 * time.Hour
 
+const (
+	// MinSecretKeyLength is the shortest SECRET_KEY the service accepts, in
+	// bytes. HS256 is only as strong as its key; 32 bytes matches the 256-bit
+	// output of the hash.
+	MinSecretKeyLength = 32
+	// placeholderSecretKey is the value shipped in .env.example. It is public,
+	// so tokens signed with it can be forged by anyone.
+	placeholderSecretKey = "change-me-to-a-long-random-string"
+)
+
+// ValidateSecretKey reports why key must not be used to sign tokens, or nil
+// if it is acceptable. It is meant to be called once at startup so that a
+// misconfigured service refuses to run instead of issuing forgeable tokens.
+func ValidateSecretKey(key string) error {
+	switch {
+	case key == "":
+		return errors.New("SECRET_KEY is not set")
+	case key == placeholderSecretKey:
+		return errors.New("SECRET_KEY is still the placeholder from .env.example")
+	case len(key) < MinSecretKeyLength:
+		return fmt.Errorf("SECRET_KEY is %d characters long, need at least %d", len(key), MinSecretKeyLength)
+	default:
+		return nil
+	}
+}
+
 // Claims are the custom JWT claims embedded in every issued token.
 type Claims struct {
 	UserID uint   `json:"user_id"`
