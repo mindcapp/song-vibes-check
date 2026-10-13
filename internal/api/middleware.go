@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -70,6 +72,18 @@ func loggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 	})
 }
 
+// metricPath maps a request path to the value of the "path" label. Anything
+// that is not one of the service's routes becomes "other": the label would
+// otherwise take every URL a scanner tries and grow without bound.
+func metricPath(path string) string {
+	switch path {
+	case "/compare", "/health", "/metrics":
+		return path
+	default:
+		return "other"
+	}
+}
+
 // metricsMiddleware records Prometheus counters/histograms for every request.
 func metricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +92,32 @@ func metricsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(rec, r)
 
-		requestsTotal.WithLabelValues(r.Method, r.URL.Path, strconv.Itoa(rec.status)).Inc()
-		requestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(time.Since(start).Seconds())
+		path := metricPath(r.URL.Path)
+		requestsTotal.WithLabelValues(r.Method, path, strconv.Itoa(rec.status)).Inc()
+		requestDuration.WithLabelValues(r.Method, path).Observe(time.Since(start).Seconds())
+	})
+}
+
+// recoverMiddleware turns a panic in a handler into a logged 500 instead of
+// letting it kill the connection silently. The log line carries the stack.
+func recoverMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			if recovered == http.ErrAbortHandler {
+				panic(recovered) // net/http's own signal to abort the response
+			}
+
+			logger.Error("handler panicked",
+				"method", r.Method, "path", r.URL.Path,
+				"panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
+			addLogAttr(r.Context(), slog.String("error", "internal error: handler panicked"))
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}()
+
+		next.ServeHTTP(w, r)
 	})
 }

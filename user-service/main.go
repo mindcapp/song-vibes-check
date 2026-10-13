@@ -9,6 +9,7 @@ import (
 
 	"user-service/db"
 	"user-service/handlers"
+	"user-service/utils"
 )
 
 func main() {
@@ -18,8 +19,9 @@ func main() {
 		logger.Info("no .env file found, relying on environment variables")
 	}
 
-	if os.Getenv("SECRET_KEY") == "" {
-		logger.Error("SECRET_KEY environment variable is required")
+	if err := utils.ValidateSecretKey(os.Getenv("SECRET_KEY")); err != nil {
+		logger.Error("refusing to start with an unsafe SECRET_KEY",
+			"error", err.Error(), "hint", "generate one with: openssl rand -hex 32")
 		os.Exit(1)
 	}
 

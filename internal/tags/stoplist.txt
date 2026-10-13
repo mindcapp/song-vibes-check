@@ -1,0 +1,130 @@
+# Tags dropped before comparison because they say nothing about genre.
+# One tag per line, "#" starts a comment. Entries get the same cleanup as
+# incoming tags (lower-case, hyphens become spaces), so "seen-live" and
+# "Seen Live" are the same entry.
+#
+# Years and decades ("1975", "80s", "1990s", "'90s") are always dropped by a
+# built-in rule and do not need to be listed.
+#
+# Point TAG_STOPLIST_FILE at your own file to replace this list entirely.
+
+# Listener / collection noise
+seen live
+favorites
+favourites
+favorite
+favourite
+favorite songs
+favourite songs
+my favorites
+love
+loved
+awesome
+amazing
+beautiful
+best
+good
+great
+cool
+classic
+classics
+albums i own
+check out
+to listen
+under 2000 listeners
+spotify
+youtube
+
+# Release / catalogue metadata
+single
+singles
+album
+albums
+ep
+live
+cover
+covers
+remix
+remaster
+remastered
+compilation
+fixme
+unknown
+other
+misc
+various
+billboard hot 100
+grammy winner
+
+# Countries and regions
+usa
+us
+united states
+america
+american
+uk
+united kingdom
+england
+english
+britain
+british
+scotland
+scottish
+ireland
+irish
+wales
+welsh
+canada
+canadian
+australia
+australian
+new zealand
+germany
+german
+france
+french
+italy
+italian
+spain
+spanish
+portugal
+portuguese
+netherlands
+dutch
+belgium
+belgian
+sweden
+swedish
+norway
+norwegian
+denmark
+danish
+finland
+finnish
+iceland
+icelandic
+russia
+russian
+ukraine
+ukrainian
+poland
+polish
+japan
+japanese
+korea
+south korea
+korean
+china
+chinese
+india
+indian
+brazil
+brazilian
+mexico
+mexican
+argentina
+argentinian
+jamaica
+jamaican
+europe
+european

@@ -1,0 +1,12 @@
+.git
+.github
+.env
+*.env
+venv
+frontend
+mood-service
+user-service
+grafana
+deploy
+requirements.txt
+README.md
