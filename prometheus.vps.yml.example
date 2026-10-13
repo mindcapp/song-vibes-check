@@ -1,0 +1,13 @@
+# Scrape config for a service running outside docker-compose (e.g. on a VPS).
+# Copy to prometheus.vps.yml, which is git-ignored so the server address stays
+# out of the repository, and start compose with:
+#
+#   PROMETHEUS_CONFIG=./prometheus.vps.yml docker compose up prometheus grafana
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'song-vibes-check'
+    static_configs:
+      - targets: ['YOUR_SERVER_ADDRESS:8080']
