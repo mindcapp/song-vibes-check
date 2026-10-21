@@ -5,3 +5,4 @@
 .env
 venv/
 prometheus.vps.yml
+.idea/
