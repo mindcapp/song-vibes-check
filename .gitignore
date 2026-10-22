@@ -5,3 +5,10 @@
 .env
 venv/
 prometheus.vps.yml
+.idea/
+
+# pipeline
+pipeline/.venv/
+pipeline/output/
+__pycache__/
+.pytest_cache/
