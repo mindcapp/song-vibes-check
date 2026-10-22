@@ -16,6 +16,7 @@ import (
 	"github.com/mindcapp/song-vibes-check/internal/provider"
 	"github.com/mindcapp/song-vibes-check/internal/similarity"
 	"github.com/mindcapp/song-vibes-check/internal/tags"
+	"github.com/mindcapp/song-vibes-check/internal/vectors"
 )
 
 type TrackSearcher interface {
@@ -27,6 +28,8 @@ type Handlers struct {
 	searcher   TrackSearcher
 	normalizer *tags.Normalizer
 	timeout    time.Duration
+	// vectors serves the similar-track endpoints; nil when not configured.
+	vectors vectors.VectorStore
 }
 
 // NewHandlers builds the handlers. timeout bounds how long POST /compare may

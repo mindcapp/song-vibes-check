@@ -14,6 +14,11 @@ services:
       - CACHE_NEGATIVE_TTL=${CACHE_NEGATIVE_TTL:-10m}
       - CACHE_ARTIST_TTL=${CACHE_ARTIST_TTL:-72h}
       - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30s}
+      # Empty by default: /api/v1/similar and /api/v1/tracks/search answer 503.
+      # With the "vectors" profile set QDRANT_URL=http://qdrant:6333.
+      - QDRANT_URL=${QDRANT_URL:-}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-tracks}
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
     depends_on:
       - redis
     networks:
@@ -41,6 +46,20 @@ services:
       - "127.0.0.1:8001:8001"
     environment:
       - GENIUS_API_KEY=${GENIUS_API_KEY:-}
+    networks:
+      - default
+
+  # Vector database for similar-track search. Optional; start it with
+  #   QDRANT_URL=http://qdrant:6333 docker compose --profile vectors up -d
+  # and fill it with pipeline/prepare_data.py --qdrant-url http://127.0.0.1:6333.
+  qdrant:
+    profiles: ["vectors"]
+    image: qdrant/qdrant:v1.16.1
+    ports:
+      # Bound to loopback so the offline pipeline on the host can load data.
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
     networks:
       - default
 
@@ -122,6 +141,7 @@ services:
       - prometheus
 
 volumes:
+  qdrant_data:
   prometheus_data:
   grafana_data:
   user_service_db_data:
