@@ -79,6 +79,8 @@ docker compose up --build -d
 > mood-service тяжёлый (PyTorch) и требует ключ Genius API, поэтому запускается только по запросу:
 > `GENIUS_API_KEY=... docker compose --profile mood up --build`
 
+> Поиск похожих треков нужен Qdrant, он тоже запускается по запросу — см. [Поиск похожих треков](#-поиск-похожих-треков).
+
 **Без Docker:**
 
 ```bash
@@ -94,6 +96,8 @@ go run ./cmd/server
 | POST  | `/compare` | сравнение двух песен               |
 | GET   | `/health`  | health check, `{"status":"ok"}`    |
 | GET   | `/metrics` | метрики в формате Prometheus       |
+| GET   | `/api/v1/similar` | похожие по звучанию треки (Qdrant) |
+| GET   | `/api/v1/tracks/search` | поиск трека по названию или исполнителю |
 
 ### Пример запроса
 
@@ -145,6 +149,102 @@ curl -s -X POST localhost:8080/compare \
 | `502` | MusicBrainz недоступен; приходит заголовок `Retry-After` |
 | `500` | внутренняя ошибка (паника перехватывается и пишется в лог со стеком) |
 
+## 🔎 Поиск похожих треков
+
+Треки из [FMA](https://github.com/mdeff/fma) (подмножество `small`, 8 000 треков) лежат в
+Qdrant: 64-мерный вектор аудиопризнаков librosa (после нормализации и PCA), косинусная
+близость. Коллекцию готовит офлайн-пайплайн `pipeline/prepare_data.py` — описание
+в `pipeline/README.md`. Эндпоинты включаются переменной `QDRANT_URL`; без неё они
+отвечают `503`, остальной сервис работает как обычно.
+
+### Запуск
+
+```bash
+# Qdrant из профиля vectors (порт только на 127.0.0.1) и API, знающий его адрес
+QDRANT_URL=http://qdrant:6333 docker compose --profile vectors up --build -d
+
+# один раз залить данные (с хоста, порт 6333 проброшен на loopback)
+cd pipeline && .venv/bin/python prepare_data.py --qdrant-url http://127.0.0.1:6333
+```
+
+Без Docker: `QDRANT_URL=http://127.0.0.1:6333 go run ./cmd/server`.
+
+Qdrant добавлен в корневой `docker-compose.yml` профилем `vectors`, а не вынесен
+ссылкой на `pipeline/docker-compose.yml`: контейнеру `api` нужен Qdrant в той же
+docker-сети (`http://qdrant:6333`), а отдельный compose создаёт свою сеть. Профиль
+держит его выключенным по умолчанию, как `mood-service`. `pipeline/docker-compose.yml`
+остаётся для работы с пайплайном без остального стека; одновременно оба не поднимать —
+они займут один порт 6333, и данные у них в разных томах.
+
+### `GET /api/v1/similar`
+
+| Параметр | По умолчанию | Описание |
+| --- | --- | --- |
+| `track_id` | — (обязателен) | id трека FMA, положительное целое |
+| `limit` | `5` | сколько соседей вернуть, от 1 до 50 |
+| `exclude_same_artist` | `false` | `true` — пропустить треки того же исполнителя |
+
+С `exclude_same_artist=true` у Qdrant берутся кандидаты с запасом (`max(6×limit, 30)`),
+треки того же `artist` отбрасываются; если осталось меньше `limit`, поиск один раз
+расширяется до 1000 кандидатов — так же, как метрика в `pipeline/evaluate.py`.
+
+```bash
+curl -s 'localhost:8080/api/v1/similar?track_id=38910&limit=3&exclude_same_artist=true' | jq
+```
+
+```json
+{
+  "track": {"track_id": 38910, "title": "greyish", "artist": "File Under Toner",
+            "genre": "Experimental", "x": 11.6233, "y": -3.5402},
+  "neighbors": [
+    {"track_id": 9846, "title": "Computer Music/Post-Fordism", "artist": "Mattin",
+     "genre": "Experimental", "x": 11.5895, "y": -3.447, "score": 0.91519415},
+    {"track_id": 126516, "title": "Ancient Greece Noise", "artist": "Seiei Jack",
+     "genre": "Experimental", "x": 11.6035, "y": -3.5729, "score": 0.86939424},
+    {"track_id": 127350, "title": "恐怖", "artist": "Lately Kind of Yeah",
+     "genre": "Electronic", "x": 11.7392, "y": -3.6218, "score": 0.865085}
+  ]
+}
+```
+
+Без `exclude_same_artist` первые три места заняли бы другие треки File Under Toner.
+`x`, `y` — 2D-проекция UMAP для карты на фронте.
+
+`score` — косинусная близость (1 — одинаковое направление векторов). `genre` — жанр
+FMA (`genre_top`), в поиске он не участвует.
+
+### `GET /api/v1/tracks/search`
+
+Для выпадающего списка на фронте: треки, у которых название или исполнитель содержит
+`q` (без учёта регистра). Сначала совпадения в начале названия, потом в начале имени
+исполнителя, потом в середине.
+
+| Параметр | По умолчанию | Описание |
+| --- | --- | --- |
+| `q` | — (обязателен) | от 2 до 100 символов |
+| `limit` | `10` | от 1 до 50 |
+
+```bash
+curl -s 'localhost:8080/api/v1/tracks/search?q=awol&limit=2' | jq
+# {"tracks": [{"track_id": 2, "title": "Food", "artist": "AWOL", "genre": "Hip-Hop", "x": 7.6261, "y": -3.3019},
+#             {"track_id": 80293, "title": "HipHop Junkfood", "artist": "AWOL", "genre": "Hip-Hop", "x": 7.9355, "y": -1.4202}]}
+```
+
+Поиск идёт по копии payload в памяти API: при первом запросе все точки читаются из
+Qdrant (`scroll`) и перечитываются раз в 10 минут. Текстовый фильтр Qdrant без
+полнотекстового индекса чувствителен к регистру, а 8 000 названий дешевле держать в памяти,
+чем менять коллекцию.
+
+### Коды ответов
+
+| Код | Когда |
+| --- | --- |
+| `200` | всё хорошо (пустой результат — пустой массив) |
+| `400` | нет `track_id`, он не положительное целое, `limit` вне диапазона, `exclude_same_artist` не булево, `q` короче 2 символов |
+| `404` | трека с таким `track_id` нет в коллекции |
+| `502` | Qdrant недоступен или не ответил вовремя; приходит `Retry-After` |
+| `503` | поиск не настроен: не задан `QDRANT_URL` |
+
 ## ⚙️ Конфигурация
 
 | Переменная | По умолчанию | Назначение |
@@ -157,6 +257,9 @@ curl -s -X POST localhost:8080/compare \
 | `CACHE_ARTIST_TTL` | `72h` | для тегов исполнителя |
 | `REQUEST_TIMEOUT` | `30s` | общий таймаут обработки запроса |
 | `TAG_STOPLIST_FILE` | встроенный | свой стоп-лист тегов |
+| `QDRANT_URL` | — | адрес Qdrant (`http://host:6333`); без него поиск похожих выключен |
+| `QDRANT_COLLECTION` | `tracks` | имя коллекции |
+| `QDRANT_API_KEY` | — | ключ, если в Qdrant включена аутентификация |
 
 Ошибки MusicBrainz в кэш не попадают.
 
@@ -173,6 +276,8 @@ curl -s -X POST localhost:8080/compare \
 | `cache_hits_total{cache}` | попадания в кэш (`track` / `artist`) |
 | `cache_misses_total{cache}` | промахи, только лидер singleflight |
 | `cache_coalesced_total{cache}` | запросы, склеенные с уже идущим |
+| `qdrant_request_duration_seconds{operation}` | время запросов к Qdrant (`retrieve` / `query` / `scroll`) |
+| `qdrant_errors_total{operation,reason}` | ошибки Qdrant по причинам (`network`, `timeout`, `status_5xx`, …) |
 
 Неизвестные пути сводятся к `other`, чтобы сканеры не раздували число рядов.
 

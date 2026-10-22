@@ -12,5 +12,7 @@ func NewRouter(h *Handlers, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /compare", h.Compare)
 	mux.HandleFunc("GET /health", h.Health)
 	mux.Handle("GET /metrics", promhttp.Handler())
+	mux.HandleFunc("GET /api/v1/similar", h.Similar)
+	mux.HandleFunc("GET /api/v1/tracks/search", h.SearchTracks)
 	return metricsMiddleware(loggingMiddleware(logger, recoverMiddleware(logger, mux)))
 }
