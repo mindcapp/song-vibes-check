@@ -1,17 +1,32 @@
-"""Cleaning, z-normalisation and PCA; fitted params are persisted for new data."""
+"""Cleaning, normalisation and PCA; fitted params are persisted for new data."""
 import logging
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Any, Tuple
 
 import joblib
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import QuantileTransformer, RobustScaler, StandardScaler
 
 log = logging.getLogger(__name__)
 
 RANDOM_STATE = 42
+
+SCALERS = ("standard", "robust", "quantile")
+
+
+def make_scaler(name: str) -> Any:
+    """Feature normaliser applied before PCA."""
+    if name == "standard":
+        return StandardScaler()
+    if name == "robust":
+        return RobustScaler()
+    if name == "quantile":
+        return QuantileTransformer(
+            n_quantiles=1000, output_distribution="normal", random_state=RANDOM_STATE
+        )
+    raise ValueError("unknown scaler %r, expected one of %s" % (name, SCALERS))
 
 
 def drop_non_finite(features: pd.DataFrame) -> pd.DataFrame:
@@ -25,7 +40,7 @@ def drop_non_finite(features: pd.DataFrame) -> pd.DataFrame:
 
 @dataclass
 class Preprocessor:
-    scaler: StandardScaler
+    scaler: Any
     pca: PCA
 
     def transform(self, x: np.ndarray) -> np.ndarray:
@@ -41,13 +56,15 @@ class Preprocessor:
         return cls(scaler=params["scaler"], pca=params["pca"])
 
 
-def fit_preprocessor(x: np.ndarray, n_components: int = 64) -> Tuple[Preprocessor, np.ndarray]:
-    """Fit z-score scaler and PCA on x; return the preprocessor and PCA vectors."""
-    scaler = StandardScaler().fit(x)
-    pca = PCA(n_components=n_components, random_state=RANDOM_STATE).fit(scaler.transform(x))
+def fit_preprocessor(
+    x: np.ndarray, n_components: int = 64, scaler: str = "standard"
+) -> Tuple[Preprocessor, np.ndarray]:
+    """Fit the scaler and PCA on x; return the preprocessor and PCA vectors."""
+    fitted = make_scaler(scaler).fit(x)
+    pca = PCA(n_components=n_components, random_state=RANDOM_STATE).fit(fitted.transform(x))
     log.info(
-        "PCA %d -> %d dims, explained variance %.3f",
-        x.shape[1], n_components, pca.explained_variance_ratio_.sum(),
+        "%s + PCA %d -> %d dims, explained variance %.3f",
+        scaler, x.shape[1], n_components, pca.explained_variance_ratio_.sum(),
     )
-    pre = Preprocessor(scaler=scaler, pca=pca)
+    pre = Preprocessor(scaler=fitted, pca=pca)
     return pre, pre.transform(x)
