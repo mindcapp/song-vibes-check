@@ -46,3 +46,15 @@ def test_payload_format_and_points_json(tmp_path):
     write_points_json(payloads, str(out))
     points = json.loads(out.read_text())
     assert set(points[0]) == {"track_id", "x", "y", "genre"}
+
+
+def test_all_scalers_fit_and_transform():
+    import pytest
+    from preprocess import SCALERS, make_scaler
+
+    x = np.random.RandomState(2).lognormal(size=(300, 12))
+    for name in SCALERS:
+        pre, vectors = fit_preprocessor(x, n_components=4, scaler=name)
+        assert vectors.shape == (300, 4) and np.isfinite(vectors).all()
+    with pytest.raises(ValueError):
+        make_scaler("minmax")
