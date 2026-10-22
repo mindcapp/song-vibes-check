@@ -14,6 +14,7 @@ import (
 	"github.com/mindcapp/song-vibes-check/internal/cache"
 	"github.com/mindcapp/song-vibes-check/internal/provider"
 	"github.com/mindcapp/song-vibes-check/internal/tags"
+	"github.com/mindcapp/song-vibes-check/internal/vectors"
 )
 
 const (
@@ -23,6 +24,7 @@ const (
 	defaultCacheArtistTTL   = 72 * time.Hour
 	defaultRequestTimeout   = 30 * time.Second
 	defaultCacheNegativeTTL = 10 * time.Minute
+	defaultQdrantCollection = "tracks"
 )
 
 func main() {
@@ -52,7 +54,7 @@ func run() int {
 		return len(normalizer.NormalizeAll(names))
 	})
 	requestTimeout := durationEnv(logger, "REQUEST_TIMEOUT", defaultRequestTimeout)
-	handlers := api.NewHandlers(resolver, normalizer, requestTimeout)
+	handlers := api.NewHandlers(resolver, normalizer, requestTimeout).WithVectors(withVectors(logger))
 
 	srv := &http.Server{
 		Addr:              ":8080",
@@ -135,6 +137,34 @@ func withCache(client *provider.Client, logger *slog.Logger) (provider.TrackSear
 		}
 	}
 	return cache.NewSearcher(client, store, cfg, logger), cache.NewArtistTags(client, store, cfg, logger), closeStore
+}
+
+// withVectors connects the similar-track endpoints to Qdrant when QDRANT_URL
+// is set. Without it, or with an invalid URL, those endpoints answer 503 and
+// the rest of the service works as before. Qdrant is not contacted here: a
+// database that is down only fails the requests that need it.
+func withVectors(logger *slog.Logger) vectors.VectorStore {
+	qdrantURL := os.Getenv("QDRANT_URL")
+	if qdrantURL == "" {
+		logger.Info("vector search disabled: QDRANT_URL is not set")
+		return nil
+	}
+	collection := os.Getenv("QDRANT_COLLECTION")
+	if collection == "" {
+		collection = defaultQdrantCollection
+	}
+	var opts []vectors.Option
+	if key := os.Getenv("QDRANT_API_KEY"); key != "" {
+		opts = append(opts, vectors.WithAPIKey(key))
+	}
+
+	store, err := vectors.NewQdrant(qdrantURL, collection, opts...)
+	if err != nil {
+		logger.Warn("vector search disabled: invalid QDRANT_URL", "error", err.Error())
+		return nil
+	}
+	logger.Info("vector search enabled", "collection", collection)
+	return store
 }
 
 // durationEnv reads a Go duration ("24h", "90m") from the environment,
