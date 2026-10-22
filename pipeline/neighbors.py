@@ -19,6 +19,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("--count", type=int, default=5, help="random tracks when no --track-id")
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--exclude-same-artist", action="store_true",
+                    help="skip neighbours by the query's artist")
+    ap.add_argument("--candidates", type=int, default=30)
     args = ap.parse_args(argv)
 
     client = QdrantClient(url=args.qdrant_url)
@@ -36,8 +39,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     for tid in ids:
         query = client.retrieve(args.collection, ids=[tid], with_payload=True)[0]
         print("\nQUERY  %s" % fmt(query))
-        res = client.query_points(args.collection, query=tid, limit=args.k, with_payload=True)
-        for p in res.points:
+        limit = args.candidates if args.exclude_same_artist else args.k
+        res = client.query_points(args.collection, query=tid, limit=limit, with_payload=True)
+        points = res.points
+        if args.exclude_same_artist:
+            points = [p for p in points if p.payload["artist"] != query.payload["artist"]]
+        for p in points[: args.k]:
             print("  %.3f  %s" % (p.score, fmt(p)))
 
 
