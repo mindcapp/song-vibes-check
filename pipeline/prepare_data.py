@@ -9,9 +9,10 @@ import numpy as np
 import umap
 from qdrant_client import QdrantClient, models
 
+from evaluate import log_scores, same_genre_at_k
 from fma_loader import SUBSETS, load_subset
 from payloads import build_payloads, write_points_json
-from preprocess import RANDOM_STATE, drop_non_finite, fit_preprocessor
+from preprocess import RANDOM_STATE, SCALERS, drop_non_finite, fit_preprocessor
 
 log = logging.getLogger("pipeline")
 
@@ -60,6 +61,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--qdrant-url", default="http://127.0.0.1:6333")
     p.add_argument("--output-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "output"))
     p.add_argument("--components", type=int, default=64, help="PCA dimensions")
+    p.add_argument("--scaler", default="standard", choices=SCALERS,
+                   help="normaliser before PCA (standard won the comparison, see README)")
     p.add_argument("--limit", type=int, default=None, help="use only first N tracks (debug)")
     p.add_argument("--skip-qdrant", action="store_true", help="only write local files")
     return p.parse_args(argv)
@@ -75,8 +78,16 @@ def main(argv: Optional[List[str]] = None) -> None:
     features = drop_non_finite(features)
     tracks = tracks.loc[features.index]
 
-    pre, vectors = fit_preprocessor(features.to_numpy(dtype=np.float64), args.components)
+    pre, vectors = fit_preprocessor(
+        features.to_numpy(dtype=np.float64), args.components, scaler=args.scaler
+    )
     pre.save(os.path.join(args.output_dir, "preprocessor.joblib"))
+
+    # genres/artists are used only to report quality, not for fitting
+    scores = same_genre_at_k(
+        vectors, tracks["track", "genre_top"].to_numpy(), tracks["artist", "name"].to_numpy()
+    )
+    log_scores(args.scaler, scores)
 
     log.info("running UMAP on %d vectors", len(vectors))
     coords = compute_umap(vectors)
