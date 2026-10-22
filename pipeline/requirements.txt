@@ -1,0 +1,11 @@
+joblib==1.5.3
+llvmlite==0.43.0
+numba==0.60.0
+numpy==2.0.2
+pandas==2.3.3
+pynndescent==0.6.0
+pytest==8.4.2
+qdrant-client==1.16.1
+scikit-learn==1.6.1
+scipy==1.13.1
+umap-learn==0.5.12
