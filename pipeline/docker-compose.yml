@@ -1,6 +1,6 @@
 services:
   qdrant:
-    image: qdrant/qdrant:v1.12.4
+    image: qdrant/qdrant:v1.16.1
     container_name: song-vibes-qdrant
     restart: unless-stopped
     ports:
