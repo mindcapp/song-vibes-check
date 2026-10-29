@@ -55,13 +55,13 @@ FROM events_per_minute GROUP BY minute, event_type ORDER BY minute, event_type;
 Лучшие переходы (из какого трека в какой слушатель идёт и не скипает):
 ```sql
 SELECT from_track, to_track,
-       sum(plays) AS plays,
-       sum(skips) AS skips,
-       round(1 - sum(skips) / sum(plays), 3) AS keep_rate
+       sum(plays) AS total_plays,
+       sum(skips) AS total_skips,
+       round(1 - total_skips / total_plays, 3) AS keep_rate
 FROM transitions
 GROUP BY from_track, to_track
-HAVING plays >= 20
-ORDER BY keep_rate DESC, plays DESC
+HAVING total_plays >= 20
+ORDER BY keep_rate DESC, total_plays DESC
 LIMIT 20;
 ```
 Если логика генератора работает, у топовых пар `from_track` и `to_track` должны быть из одного кластера (номера треков совпадают по модулю 12).
