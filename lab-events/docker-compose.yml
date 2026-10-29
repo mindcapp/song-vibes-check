@@ -15,7 +15,9 @@ services:
       - --kafka-addr=internal://0.0.0.0:29092,external://0.0.0.0:9092
       - --advertise-kafka-addr=internal://redpanda:29092,external://localhost:9092
     ports:
-      - "9092:9092"
+      # Loopback only: the broker has no authentication. The API and the
+      # generator on the host connect to localhost:9092.
+      - "127.0.0.1:9092:9092"
     volumes:
       - redpanda_data:/var/lib/redpanda/data
     mem_limit: 900m
@@ -41,12 +43,14 @@ services:
       redpanda-init:
         condition: service_completed_successfully
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      # Loopback only, like every published port in the repository.
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
     environment:
       CLICKHOUSE_DB: vibe
       CLICKHOUSE_USER: vibe
-      CLICKHOUSE_PASSWORD: vibe
+      # Lab default; override with CLICKHOUSE_PASSWORD in the environment.
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-vibe}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
