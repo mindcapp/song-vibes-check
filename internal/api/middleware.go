@@ -77,7 +77,8 @@ func loggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 // otherwise take every URL a scanner tries and grow without bound.
 func metricPath(path string) string {
 	switch path {
-	case "/compare", "/health", "/metrics", "/api/v1/similar", "/api/v1/tracks/search":
+	case "/compare", "/health", "/metrics", "/api/v1/similar", "/api/v1/tracks/search",
+		"/api/v1/events":
 		return path
 	default:
 		return "other"
