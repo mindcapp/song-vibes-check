@@ -1,0 +1,70 @@
+name: vibe-lab
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --check=false
+      - --node-id=0
+      - --kafka-addr=internal://0.0.0.0:29092,external://0.0.0.0:9092
+      - --advertise-kafka-addr=internal://redpanda:29092,external://localhost:9092
+    ports:
+      # Loopback only: the broker has no authentication. The API and the
+      # generator on the host connect to localhost:9092.
+      - "127.0.0.1:9092:9092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    mem_limit: 900m
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redpanda-init:
+    image: redpandadata/redpanda:v24.2.7
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      # "|| true" used to hide every failure (e.g. broker unreachable) and let
+      # ClickHouse start without a topic. Only an existing topic is fine now.
+      - >-
+        rpk -X brokers=redpanda:29092 topic create vibe.events.stream -p 3 -r 1
+        || rpk -X brokers=redpanda:29092 topic describe vibe.events.stream
+    restart: "no"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+    ports:
+      # Loopback only, like every published port in the repository.
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    environment:
+      CLICKHOUSE_DB: vibe
+      CLICKHOUSE_USER: vibe
+      # Lab default; override with CLICKHOUSE_PASSWORD in the environment.
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-vibe}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse-init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    mem_limit: 1500m
+
+volumes:
+  redpanda_data:
+  clickhouse_data:

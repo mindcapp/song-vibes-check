@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mindcapp/song-vibes-check/internal/events"
 	"github.com/mindcapp/song-vibes-check/internal/provider"
 	"github.com/mindcapp/song-vibes-check/internal/similarity"
 	"github.com/mindcapp/song-vibes-check/internal/tags"
@@ -30,6 +31,8 @@ type Handlers struct {
 	timeout    time.Duration
 	// vectors serves the similar-track endpoints; nil when not configured.
 	vectors vectors.VectorStore
+	// events receives listening events; nil when not configured.
+	events events.Publisher
 }
 
 // NewHandlers builds the handlers. timeout bounds how long POST /compare may
