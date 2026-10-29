@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/mindcapp/song-vibes-check/internal/api"
 	"github.com/mindcapp/song-vibes-check/internal/cache"
+	"github.com/mindcapp/song-vibes-check/internal/events"
 	"github.com/mindcapp/song-vibes-check/internal/provider"
 	"github.com/mindcapp/song-vibes-check/internal/tags"
 	"github.com/mindcapp/song-vibes-check/internal/vectors"
@@ -25,6 +27,8 @@ const (
 	defaultRequestTimeout   = 30 * time.Second
 	defaultCacheNegativeTTL = 10 * time.Minute
 	defaultQdrantCollection = "tracks"
+	// eventsFlushTimeout bounds how long shutdown waits for queued events.
+	eventsFlushTimeout = 10 * time.Second
 )
 
 func main() {
@@ -54,7 +58,14 @@ func run() int {
 		return len(normalizer.NormalizeAll(names))
 	})
 	requestTimeout := durationEnv(logger, "REQUEST_TIMEOUT", defaultRequestTimeout)
-	handlers := api.NewHandlers(resolver, normalizer, requestTimeout).WithVectors(withVectors(logger))
+	// Deferred before the server starts, so it runs after srv.Shutdown has
+	// let in-flight requests finish: their events are flushed, not dropped.
+	publisher, closeEvents := withEvents(logger)
+	defer closeEvents()
+
+	handlers := api.NewHandlers(resolver, normalizer, requestTimeout).
+		WithVectors(withVectors(logger)).
+		WithEvents(publisher)
 
 	srv := &http.Server{
 		Addr:              ":8080",
@@ -165,6 +176,47 @@ func withVectors(logger *slog.Logger) vectors.VectorStore {
 	}
 	logger.Info("vector search enabled", "collection", collection)
 	return store
+}
+
+// withEvents connects POST /api/v1/events to Redpanda when REDPANDA_BROKERS
+// (comma-separated host:port list) is set. Without it the endpoint answers
+// 503 and the rest of the service works as before. The brokers are not
+// contacted here. The returned function flushes queued events and must run
+// after the HTTP server has stopped.
+func withEvents(logger *slog.Logger) (events.Publisher, func()) {
+	noop := func() {}
+
+	var brokers []string
+	for _, b := range strings.Split(os.Getenv("REDPANDA_BROKERS"), ",") {
+		if b = strings.TrimSpace(b); b != "" {
+			brokers = append(brokers, b)
+		}
+	}
+	if len(brokers) == 0 {
+		logger.Info("events disabled: REDPANDA_BROKERS is not set")
+		return nil, noop
+	}
+	topic := os.Getenv("REDPANDA_TOPIC")
+	if topic == "" {
+		topic = events.DefaultTopic
+	}
+
+	pub, err := events.NewRedpanda(brokers, topic, events.DefaultBufferSize, logger)
+	if err != nil {
+		logger.Warn("events disabled: invalid configuration", "error", err.Error())
+		return nil, noop
+	}
+	logger.Info("events enabled", "brokers", strings.Join(brokers, ","), "topic", topic)
+
+	return pub, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), eventsFlushTimeout)
+		defer cancel()
+		if err := pub.Close(ctx); err != nil {
+			logger.Warn("queued events were not all delivered before exit", "error", err.Error())
+			return
+		}
+		logger.Info("events flushed")
+	}
 }
 
 // durationEnv reads a Go duration ("24h", "90m") from the environment,
