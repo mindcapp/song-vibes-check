@@ -34,7 +34,11 @@ services:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - rpk -X brokers=redpanda:29092 topic create vibe.events.stream -p 3 -r 1 || true
+      # "|| true" used to hide every failure (e.g. broker unreachable) and let
+      # ClickHouse start without a topic. Only an existing topic is fine now.
+      - >-
+        rpk -X brokers=redpanda:29092 topic create vibe.events.stream -p 3 -r 1
+        || rpk -X brokers=redpanda:29092 topic describe vibe.events.stream
     restart: "no"
 
   clickhouse:
