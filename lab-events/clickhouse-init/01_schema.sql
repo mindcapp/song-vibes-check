@@ -50,13 +50,16 @@ FROM vibe.events_queue;
 -- Слой 3. Матрица переходов track -> track.
 -- SummingMergeTree схлопывает строки с одинаковым ключом, суммируя числовые колонки.
 -- Читать всегда через sum()/GROUP BY: слияния идут в фоне и не мгновенно.
+-- like — отдельное событие поверх прослушивания (плеер шлёт complete/skip,
+-- а like дополнительно), поэтому оно не проигрывание и не время прослушивания.
 CREATE TABLE IF NOT EXISTS vibe.transitions
 (
     from_track LowCardinality(String),
     to_track   LowCardinality(String),
-    plays      UInt64,
+    plays      UInt64,   -- complete + skip
     skips      UInt64,
-    listen_ms  UInt64
+    likes      UInt64,
+    listen_ms  UInt64    -- только по complete и skip
 )
 ENGINE = SummingMergeTree
 ORDER BY (from_track, to_track);
@@ -65,9 +68,10 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS vibe.transitions_mv TO vibe.transitions A
 SELECT
     prev_track_id                      AS from_track,
     track_id                           AS to_track,
-    toUInt64(event_type != 'like')     AS plays,
-    toUInt64(event_type = 'skip')      AS skips,
-    toUInt64(listen_ms)                AS listen_ms
+    toUInt64(event_type IN ('complete', 'skip'))                    AS plays,
+    toUInt64(event_type = 'skip')                                   AS skips,
+    toUInt64(event_type = 'like')                                   AS likes,
+    if(event_type IN ('complete', 'skip'), toUInt64(listen_ms), 0)  AS listen_ms
 FROM vibe.events_queue
 WHERE prev_track_id != '';
 
