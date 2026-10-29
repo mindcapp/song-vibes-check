@@ -98,6 +98,7 @@ go run ./cmd/server
 | GET   | `/metrics` | метрики в формате Prometheus       |
 | GET   | `/api/v1/similar` | похожие по звучанию треки (Qdrant) |
 | GET   | `/api/v1/tracks/search` | поиск трека по названию или исполнителю |
+| POST  | `/api/v1/events` | событие прослушивания в поток аналитики (Redpanda) |
 
 ### Пример запроса
 
@@ -245,6 +246,77 @@ Qdrant (`scroll`) и перечитываются раз в 10 минут. Те�
 | `502` | Qdrant недоступен или не ответил вовремя; приходит `Retry-After` |
 | `503` | поиск не настроен: не задан `QDRANT_URL` |
 
+## 📊 События и аналитика
+
+Плеер сообщает о каждом прослушивании, API кладёт событие в Redpanda, ClickHouse
+читает топик и считает матрицу переходов «трек → следующий трек».
+
+```
+плеер ──POST /api/v1/events──▶ Go API ──franz-go, ключ session_id──▶ Redpanda
+                                                         (топик vibe.events.stream)
+                                                                    │
+                                                ClickHouse: events_queue (Kafka engine)
+                                                                    │ materialized views
+                                         ┌──────────────────────────┼──────────────────┐
+                                         ▼                          ▼                  ▼
+                                      events                  transitions      events_per_minute
+                                (сырые события)  (plays/skips/likes по паре треков)  (телеметрия)
+```
+
+Сервер сам добавляет `event_id` (UUID) и `ts_ms`. `user_id` пока анонимный
+(`anon-<session_id>`); привязка к пользователю появится вместе с JWT. Отправка
+асинхронная: `202` значит «принято в буфер», а не «записано в ClickHouse». Буфер
+ограничен 10 000 событиями: если брокер недоступен и буфер полон, API отвечает `429`.
+При остановке сервер дожидается завершения запросов и до 10 с досылает очередь.
+
+Redpanda и ClickHouse тяжёлые, поэтому в корневой `docker-compose.yml` они не входят:
+стенд живёт отдельно в [`lab-events/`](lab-events/) со своим compose. Redpanda публикует
+порт `9092` на `127.0.0.1` и анонсирует адрес `localhost:9092`, поэтому к нему
+подключается API, запущенный **на хосте** (`go run`). Контейнеру `api` из корневого
+compose этот адрес не подходит (`localhost` внутри контейнера — сам контейнер).
+
+```bash
+# 1. стенд (Redpanda + ClickHouse)
+cd lab-events && docker compose up -d && cd ..
+
+# 2. API на хосте с включёнными событиями
+REDPANDA_BROKERS=localhost:9092 go run ./cmd/server
+
+# 3. событие
+curl -s -X POST localhost:8080/api/v1/events \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id":"web-7f3a9c21","track_id":5,"prev_track_id":2,"event_type":"skip","listen_ms":4200}'
+# {"event_id":"e8d22bcb-e071-4835-9b82-5c56d2a73c8b","status":"accepted"}
+
+# 4. через пару секунд оно в ClickHouse
+docker compose -f lab-events/docker-compose.yml exec clickhouse \
+  clickhouse-client -u vibe --password vibe -d vibe \
+  -q "SELECT * FROM events WHERE session_id = 'web-7f3a9c21'"
+```
+
+Генератор синтетической нагрузки, запросы к матрице переходов и очистка
+(`docker compose down -v`) описаны в [`lab-events/README.md`](lab-events/README.md).
+
+### `POST /api/v1/events`
+
+| Поле | Обязательно | Ограничения |
+| --- | --- | --- |
+| `session_id` | да | 8–64 символа: латиница, цифры, `-`, `_` |
+| `track_id` | да | положительное целое (id трека FMA) |
+| `prev_track_id` | нет | положительное целое; не передаётся для первого трека сессии |
+| `event_type` | да | `complete`, `skip` или `like` (лайк — отдельное событие поверх прослушивания) |
+| `listen_ms` | да | от 0 до 86 400 000 |
+
+Тело — один JSON-объект до 4 КБ; неизвестные поля отклоняются.
+
+| Код | Когда |
+| --- | --- |
+| `202` | событие принято, в ответе `event_id` |
+| `400` | невалидный JSON, неизвестное поле, нарушено ограничение из таблицы выше |
+| `413` | тело больше 4 КБ |
+| `429` | буфер отправки переполнен (брокер недоступен или не успевает); приходит `Retry-After` |
+| `503` | события не настроены (`REDPANDA_BROKERS` пуст) или сервер останавливается |
+
 ## ⚙️ Конфигурация
 
 | Переменная | По умолчанию | Назначение |
@@ -260,6 +332,8 @@ Qdrant (`scroll`) и перечитываются раз в 10 минут. Те�
 | `QDRANT_URL` | — | адрес Qdrant (`http://host:6333`); без него поиск похожих выключен |
 | `QDRANT_COLLECTION` | `tracks` | имя коллекции |
 | `QDRANT_API_KEY` | — | ключ, если в Qdrant включена аутентификация |
+| `REDPANDA_BROKERS` | — | брокеры через запятую (`localhost:9092`); пусто — события выключены, `POST /api/v1/events` отвечает `503` |
+| `REDPANDA_TOPIC` | `vibe.events.stream` | топик событий |
 
 Ошибки MusicBrainz в кэш не попадают.
 
@@ -278,6 +352,8 @@ Qdrant (`scroll`) и перечитываются раз в 10 минут. Те�
 | `cache_coalesced_total{cache}` | запросы, склеенные с уже идущим |
 | `qdrant_request_duration_seconds{operation}` | время запросов к Qdrant (`retrieve` / `query` / `scroll`) |
 | `qdrant_errors_total{operation,reason}` | ошибки Qdrant по причинам (`network`, `timeout`, `status_5xx`, …) |
+| `events_published_total` | события, подтверждённые брокером |
+| `events_publish_errors_total{reason}` | неотправленные события: `buffer_full`, `delivery`, `closed`, `encode` |
 
 Неизвестные пути сводятся к `other`, чтобы сканеры не раздували число рядов.
 
