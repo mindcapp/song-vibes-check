@@ -9,6 +9,13 @@
 // Популярность треков распределена по Ципфу (-zipf): немногие треки слушают
 // часто, хвост — редко, как в реальном каталоге. Без этого при 8000 треков
 // пары переходов почти не повторяются и матрица остаётся пустой.
+//
+// По умолчанию выбор следующего трека не зависит от звучания, поэтому пары
+// «трек → его звуковой сосед» почти не встречаются. Флаг -map-share включает
+// модель, где слушатель с этой вероятностью идёт к одному из ближайших
+// треков на 2D-карте UMAP (как на фронте): так в данных появляются
+// переходы между звуково близкими треками, на которых можно проверить
+// реранжирование /api/v1/similar (lab-events/eval_rerank.py).
 package main
 
 import (
@@ -21,6 +28,7 @@ import (
 	mrand "math/rand"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -39,10 +47,12 @@ type Event struct {
 	ListenMs    int    `json:"listen_ms"`
 }
 
-// track — точка из points.json (координаты x, y генератору не нужны).
+// track — точка из points.json.
 type track struct {
-	ID    int64  `json:"track_id"`
-	Genre string `json:"genre"`
+	ID    int64   `json:"track_id"`
+	Genre string  `json:"genre"`
+	X     float64 `json:"x"` // координаты на 2D-карте UMAP
+	Y     float64 `json:"y"`
 }
 
 // loadTracks читает points.json, который пишет pipeline/prepare_data.py.
@@ -75,6 +85,11 @@ type generator struct {
 	all      *picker
 	sessions []*session
 	seq      uint64
+
+	// Режим «слушатель идёт по карте» (-map-share): с этой вероятностью
+	// следующий трек — один из ближайших соседей предыдущего на 2D-карте.
+	mapShare float64
+	mapNear  [][]int // индексы ближайших соседей каждого трека
 }
 
 // picker выбирает трек из списка: по Ципфу (первые в списке — самые
@@ -102,9 +117,12 @@ func (p *picker) pick(rnd *mrand.Rand) int {
 	return p.idx[p.zipf.Uint64()]
 }
 
-func newGenerator(seed int64, users int, tracks []track, zipf float64) *generator {
+func newGenerator(seed int64, users int, tracks []track, zipf, mapShare float64, mapNeighbors int) *generator {
 	rnd := mrand.New(mrand.NewSource(seed))
-	g := &generator{rnd: rnd, tracks: tracks, byGenre: make(map[string]*picker)}
+	g := &generator{rnd: rnd, tracks: tracks, byGenre: make(map[string]*picker), mapShare: mapShare}
+	if mapShare > 0 {
+		g.mapNear = nearestOnMap(tracks, mapNeighbors)
+	}
 
 	// Один общий порядок популярности: трек, популярный в целом, популярен
 	// и внутри своего жанра.
@@ -133,9 +151,39 @@ func (g *generator) newSession(user int) *session {
 	}
 }
 
-// nextTrack: 70% остаёмся в жанре предыдущего трека, иначе случайный трек.
-// Тот же трек подряд не повторяется.
+// nearestOnMap для каждого трека находит k ближайших на карте (перебором:
+// для 8 000 точек это ~64 млн сравнений, доли секунды).
+func nearestOnMap(tracks []track, k int) [][]int {
+	k = min(k, len(tracks)-1)
+	type cand struct {
+		idx int
+		d   float64
+	}
+	out := make([][]int, len(tracks))
+	buf := make([]cand, 0, len(tracks))
+	for i, a := range tracks {
+		buf = buf[:0]
+		for j, b := range tracks {
+			if i != j {
+				buf = append(buf, cand{j, (a.X-b.X)*(a.X-b.X) + (a.Y-b.Y)*(a.Y-b.Y)})
+			}
+		}
+		sort.Slice(buf, func(x, y int) bool { return buf[x].d < buf[y].d })
+		for _, c := range buf[:k] {
+			out[i] = append(out[i], c.idx)
+		}
+	}
+	return out
+}
+
+// nextTrack: с вероятностью mapShare переходим к ближайшему на карте
+// (если режим включён); иначе 70% остаёмся в жанре предыдущего трека,
+// иначе случайный трек. Тот же трек подряд не повторяется.
 func (g *generator) nextTrack(prev int) int {
+	if prev >= 0 && g.mapShare > 0 && g.rnd.Float64() < g.mapShare {
+		near := g.mapNear[prev]
+		return near[g.rnd.Intn(len(near))]
+	}
 	from := g.all
 	if prev >= 0 && g.rnd.Float64() < 0.7 {
 		from = g.byGenre[g.tracks[prev].Genre]
@@ -214,12 +262,14 @@ func main() {
 		users    = flag.Int("users", 200, "число одновременных сессий")
 		points   = flag.String("points", "../../pipeline/output/points.json", "треки: points.json из pipeline")
 		zipf     = flag.Float64("zipf", 1.2, "показатель Ципфа для популярности треков (<=1 — равномерно)")
+		mapShare = flag.Float64("map-share", 0, "доля переходов к ближайшему на карте UMAP треку (0 — выключено)")
+		mapNear  = flag.Int("map-neighbors", 20, "сколько ближайших на карте треков рассматривать при -map-share")
 		seed     = flag.Int64("seed", time.Now().UnixNano(), "seed генератора")
 	)
 	flag.Parse()
 
-	if *rate <= 0 || *users <= 0 {
-		log.Fatal("некорректные параметры: rate>0, users>0")
+	if *rate <= 0 || *users <= 0 || *mapShare < 0 || *mapShare > 1 || *mapNear <= 0 {
+		log.Fatal("некорректные параметры: rate>0, users>0, 0<=map-share<=1, map-neighbors>0")
 	}
 	tracks, err := loadTracks(*points)
 	if err != nil {
@@ -251,7 +301,7 @@ func main() {
 	}
 	cancelPing()
 
-	gen := newGenerator(*seed, *users, tracks, *zipf)
+	gen := newGenerator(*seed, *users, tracks, *zipf, *mapShare, *mapNear)
 	var sent, failed atomic.Int64
 
 	log.Printf("старт: %d прослушиваний/с, %d треков, %d жанров, топик %s, брокеры %s",
