@@ -379,6 +379,10 @@ docker compose -f lab-events/docker-compose.yml exec clickhouse \
   -q "SELECT * FROM events WHERE session_id = 'web-7f3a9c21'"
 ```
 
+Фронтенд (`frontend/`, страница `/similar`) шлёт эти события сам: при переходе к другому
+треку — `skip` или `complete` для покинутого, по кнопке «нравится» — `like`
+(подробности в [`frontend/README.md`](frontend/README.md)).
+
 Генератор синтетической нагрузки, запросы к матрице переходов и очистка
 (`docker compose down -v`) описаны в [`lab-events/README.md`](lab-events/README.md).
 
