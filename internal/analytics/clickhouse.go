@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -134,6 +135,12 @@ func (c *ClickHouse) Stats(ctx context.Context, from int64, to []int64) (stats m
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		// net/http wraps the cause in a *url.Error that repeats the whole
+		// request URL, SQL included; the cause alone is what the log needs.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
 		return nil, &UpstreamError{Err: err}
 	}
 	defer resp.Body.Close()

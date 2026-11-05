@@ -161,6 +161,9 @@ func TestStatsUnreachableAndCanceled(t *testing.T) {
 	if !errors.Is(err, ErrUpstream) || errorReason(err) != "network" {
 		t.Errorf("err = %v (reason %q), want a network error", err, errorReason(err))
 	}
+	if strings.Contains(err.Error(), "SELECT") || strings.Contains(err.Error(), "param_") {
+		t.Errorf("the error repeats the request URL: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
