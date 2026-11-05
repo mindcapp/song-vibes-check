@@ -21,6 +21,9 @@ export default function Header() {
           <Link to="/" className="text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">
             Compare
           </Link>
+          <Link to="/similar" className="text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">
+            Similar
+          </Link>
 
           {isLoggedIn ? (
             <>
