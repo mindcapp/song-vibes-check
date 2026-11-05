@@ -184,6 +184,7 @@ docker-сети (`http://qdrant:6333`), а отдельный compose созда
 | `track_id` | — (обязателен) | id трека FMA, положительное целое |
 | `limit` | `5` | сколько соседей вернуть, от 1 до 50 |
 | `exclude_same_artist` | `false` | `true` — пропустить треки того же исполнителя |
+| `rerank` | `false` | `true` — переупорядочить по поведению слушателей из ClickHouse, см. [ниже](#реранжирование-по-поведению-слушателей-rerank) |
 
 С `exclude_same_artist=true` у Qdrant берутся кандидаты с запасом (`max(6×limit, 30)`),
 треки того же `artist` отбрасываются; если осталось меньше `limit`, поиск один раз
@@ -213,6 +214,90 @@ curl -s 'localhost:8080/api/v1/similar?track_id=38910&limit=3&exclude_same_artis
 
 `score` — косинусная близость (1 — одинаковое направление векторов). `genre` — жанр
 FMA (`genre_top`), в поиске он не участвует.
+
+### Реранжирование по поведению слушателей (`rerank`)
+
+Звуковая близость не знает, что слушатели на самом деле делают после трека: одного соседа
+дослушивают, а другого скипают. С `rerank=true` API учитывает это, используя матрицу переходов
+из ClickHouse (её собирает поток событий, см. раздел «События и аналитика»). Без `rerank`
+ответ и порядок прежние, ClickHouse не запрашивается.
+
+**Алгоритм**
+
+1. У Qdrant берётся `max(4·limit, 20)` кандидатов (с учётом `exclude_same_artist`).
+2. Одним запросом к ClickHouse достаются суммы `plays` и `skips` переходов «исходный трек →
+   кандидат» (`plays` — это `complete` + `skip`, лайки не в счёт).
+3. Для каждого кандидата с проигрываниями `keep_rate = 1 − skips/plays`, сглаженный к среднему:
+
+   ```
+   keeps        = plays − skips
+   avg          = среднее keep_rate по кандидатам, у которых есть проигрывания (если ни у кого, 0.5)
+   keep_smoothed = (keeps + k·avg) / (plays + k)            k = RERANK_SMOOTHING = 5
+   score        = (1 − w)·cosine + w·keep_smoothed          w = RERANK_WEIGHT = 0.3
+   ```
+
+   У кандидата без проигрываний `keep_smoothed = avg`. Сглаживание нужно, чтобы пара, увиденная
+   два раза без скипов, не обгоняла пару из 200 проигрываний с 5% скипов.
+4. Кандидаты сортируются по `score` (при равенстве — по `cosine`, затем по `track_id`),
+   возвращаются первые `limit`.
+
+**Формат ответа с `rerank=true`.** У каждого соседа добавляются поля; `score` теперь итоговая
+оценка, а исходная близость Qdrant вынесена в `cosine`:
+
+| Поле | Что значит |
+| --- | --- |
+| `score` | `(1 − w)·cosine + w·keep_rate`, по нему отсортирован список |
+| `cosine` | косинусная близость из Qdrant (в обычном ответе это поле называется `score`) |
+| `keep_rate` | доля недоскипанных проигрываний после сглаживания; у пар без данных равна среднему |
+| `plays` | сколько раз слушатели ставили этот трек сразу после исходного (0 — данных нет) |
+| `reranked` (в корне) | `true` |
+
+**Если реранжирование невозможно**, запрос не падает: приходит `200` с обычной выдачей Qdrant
+(формат и порядок как без `rerank`, первые `limit`) и двумя полями в корне: `"reranked": false` и
+`"rerank_skipped_reason"` с причиной. Так бывает, когда не задан `CLICKHOUSE_URL`, ClickHouse
+недоступен, ответил ошибкой или не уложился в `CLICKHOUSE_TIMEOUT` (500 мс). Если недоступен
+сам Qdrant, ответ по-прежнему `502`. Если статистика прочиталась, но пустая, это обычное
+реранжирование: у всех `keep_rate = 0.5`, `plays = 0`, порядок совпадает с порядком Qdrant.
+
+**Пример** (стенд из `lab-events/` с синтетическими событиями, сервер запущен с `CLICKHOUSE_URL`):
+
+```bash
+curl -s 'localhost:8080/api/v1/similar?track_id=49477&limit=3&rerank=true' | jq
+```
+
+```json
+{
+  "track": {"track_id": 49477, "title": "U Fine (Remix) (Featuring CM aka Creative)",
+            "artist": "Garmisch", "genre": "Pop", "x": 6.425, "y": -1.724},
+  "neighbors": [
+    {"track_id": 135339, "title": "I Think From Now On", "artist": "Caleb Lemond", "genre": "Pop",
+     "x": 6.382, "y": -1.778, "score": 0.753, "cosine": 0.736, "keep_rate": 0.793, "plays": 20},
+    {"track_id": 105450, "title": "Favorite Addiction (Featuring Joaquin Evans)", "artist": "Deadly Combo",
+     "genre": "Hip-Hop", "x": 6.249, "y": -1.911, "score": 0.706, "cosine": 0.767, "keep_rate": 0.563, "plays": 0},
+    {"track_id": 147268, "title": "Keep It Up/Tranzitionz", "artist": "K.I.R.K", "genre": "Hip-Hop",
+     "x": 6.248, "y": -1.942, "score": 0.657, "cosine": 0.697, "keep_rate": 0.563, "plays": 0}
+  ],
+  "reranked": true
+}
+```
+
+<sub>Числа округлены до трёх знаков.</sub>
+
+**Разбор.** Без `rerank` порядок такой: 105450 (cosine 0.767), 108491 (0.738), 135339 (0.736).
+
+- **135339 поднялся с 3-го места на 1-е.** После исходного трека его ставили 20 раз и скипнули 3
+  (`keeps = 17`), поэтому `keep_rate = (17 + 5·0.563)/(20 + 5) = 0.793`, а
+  `score = 0.7·0.736 + 0.3·0.793 = 0.753`. Это выше, чем у 105450 с большей близостью.
+- **105450 опустился на 2-е место:** данных нет (`plays: 0`), ему подставлено среднее
+  `keep_rate = 0.563`, `score = 0.7·0.767 + 0.3·0.563 = 0.706`.
+- **108491 (2-й у Qdrant) пропал из топ-3:** у него 29 проигрываний и 21 скип, это самый
+  скипаемый переход из кандидатов, и сглаженный `keep_rate` тянет его вниз.
+- `0.563` в `keep_rate` без данных — это и есть `avg` по кандидатам с проигрываниями.
+
+> **Качество не доказано.** На синтетических событиях лаборатории реранжирование чуть снижает
+> долю скипов в топ-5 и слегка повышает долю соседей того же жанра, но доверительные интервалы
+> включают ноль, а сам эффект задан правилами генератора. Методика и числа — в
+> [`lab-events/README.md`](lab-events/README.md). На реальном трафике его ещё нужно измерить.
 
 ### `GET /api/v1/tracks/search`
 
@@ -334,6 +419,16 @@ docker compose -f lab-events/docker-compose.yml exec clickhouse \
 | `QDRANT_API_KEY` | — | ключ, если в Qdrant включена аутентификация |
 | `REDPANDA_BROKERS` | — | брокеры через запятую (`localhost:9092`); пусто — события выключены, `POST /api/v1/events` отвечает `503` |
 | `REDPANDA_TOPIC` | `vibe.events.stream` | топик событий |
+| `CLICKHOUSE_URL` | — | HTTP-адрес ClickHouse (`http://127.0.0.1:8123`); без него `rerank=true` отвечает выдачей Qdrant и `reranked: false` |
+| `CLICKHOUSE_USER` | — (пользователь `default`) | пользователь, передаётся заголовком, не в URL |
+| `CLICKHOUSE_PASSWORD` | — | пароль, только через окружение; у лаборатории по умолчанию `vibe`, у прода свой |
+| `CLICKHOUSE_DATABASE` | `vibe` | база с таблицей `transitions` |
+| `CLICKHOUSE_TIMEOUT` | `500ms` | таймаут запроса статистики; при превышении реранжирование пропускается |
+| `RERANK_WEIGHT` | `0.3` | вес поведения `w`, число от 0 до 1 |
+| `RERANK_SMOOTHING` | `5` | сглаживание `k` (число «средних» проигрываний), от 0 |
+
+Некорректные `RERANK_WEIGHT` и `RERANK_SMOOTHING` не останавливают сервис: пишется предупреждение
+и берётся значение по умолчанию.
 
 Ошибки MusicBrainz в кэш не попадают.
 
@@ -352,6 +447,9 @@ docker compose -f lab-events/docker-compose.yml exec clickhouse \
 | `cache_coalesced_total{cache}` | запросы, склеенные с уже идущим |
 | `qdrant_request_duration_seconds{operation}` | время запросов к Qdrant (`retrieve` / `query` / `scroll`) |
 | `qdrant_errors_total{operation,reason}` | ошибки Qdrant по причинам (`network`, `timeout`, `status_5xx`, …) |
+| `clickhouse_request_duration_seconds` | время запроса статистики переходов в ClickHouse |
+| `clickhouse_errors_total{reason}` | ошибки ClickHouse: `network`, `timeout`, `status_4xx`, `status_5xx`, `bad_response`, `canceled` |
+| `similar_requests_total{mode}` | ответы `/api/v1/similar`: `plain`, `reranked`, `rerank_skipped`; доля реранжирования: `rate(…{mode="reranked"}) / sum(rate(…))` |
 | `events_published_total` | события, подтверждённые брокером |
 | `events_publish_errors_total{reason}` | неотправленные события: `buffer_full`, `delivery`, `closed`, `encode` |
 
