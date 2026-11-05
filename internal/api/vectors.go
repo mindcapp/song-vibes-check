@@ -51,7 +51,10 @@ var errVectorsDisabled = &apiError{
 	message: "similar-track search is not configured on this server (QDRANT_URL is not set)",
 }
 
-// Similar handles GET /api/v1/similar?track_id=&limit=&exclude_same_artist=.
+// Similar handles GET /api/v1/similar?track_id=&limit=&exclude_same_artist=&rerank=.
+// With rerank=true the neighbours are reordered by how listeners behaved
+// after the source track (see rerank.go); if that is not possible the answer
+// is Qdrant's, marked reranked=false with the reason.
 //
 // Errors: 400 for invalid parameters, 404 when the track is not in the
 // collection, 502 (with Retry-After) when Qdrant is unavailable, 503 when
@@ -78,12 +81,24 @@ func (h *Handlers) Similar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rerank, apiErr := parseFlag("rerank", query.Get("rerank"))
+	if apiErr != nil {
+		h.fail(w, r, apiErr)
+		return
+	}
+
 	addLogAttr(r.Context(), slog.Int64("track_id", trackID))
 	addLogAttr(r.Context(), slog.Int("limit", limit))
 	addLogAttr(r.Context(), slog.Bool("exclude_same_artist", exclude))
+	addLogAttr(r.Context(), slog.Bool("rerank", rerank))
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
+
+	if rerank {
+		h.similarReranked(ctx, w, r, trackID, limit, exclude)
+		return
+	}
 
 	source, neighbors, err := h.similar(ctx, trackID, limit, exclude)
 	if err != nil {
@@ -92,6 +107,7 @@ func (h *Handlers) Similar(w http.ResponseWriter, r *http.Request) {
 	}
 	addLogAttr(r.Context(), slog.Int("neighbors", len(neighbors)))
 
+	similarRequests.WithLabelValues(modePlain).Inc()
 	writeJSON(w, http.StatusOK, similarResponse{Track: *source, Neighbors: neighbors})
 }
 
