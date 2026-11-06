@@ -67,10 +67,12 @@ jobs:
           echo "$DEPLOY_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null
-          scp -o ConnectTimeout=10 -o StrictHostKeyChecking=no song-similarity $DEPLOY_USER@$DEPLOY_HOST:/opt/song-similarity/app
+          scp -o ConnectTimeout=10 -o StrictHostKeyChecking=no song-similarity $DEPLOY_USER@$DEPLOY_HOST:/opt/song-similarity/app.new
           ssh -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST << 'DEPLOY'
+          set -e
+          sudo chmod +x /opt/song-similarity/app.new
           sudo systemctl stop song-similarity || true
-          sudo chmod +x /opt/song-similarity/app
+          sudo mv -f /opt/song-similarity/app.new /opt/song-similarity/app
           sudo systemctl start song-similarity
           sleep 2
           curl -sf http://127.0.0.1:8080/health || (sudo systemctl stop song-similarity && exit 1)
