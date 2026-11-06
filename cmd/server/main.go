@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mindcapp/song-vibes-check/internal/analytics"
 	"github.com/mindcapp/song-vibes-check/internal/api"
 	"github.com/mindcapp/song-vibes-check/internal/cache"
 	"github.com/mindcapp/song-vibes-check/internal/events"
@@ -63,9 +64,12 @@ func run() int {
 	publisher, closeEvents := withEvents(logger)
 	defer closeEvents()
 
+	stats, rerankCfg := withAnalytics(logger)
+
 	handlers := api.NewHandlers(resolver, normalizer, requestTimeout).
 		WithVectors(withVectors(logger)).
-		WithEvents(publisher)
+		WithEvents(publisher).
+		WithAnalytics(stats, rerankCfg)
 
 	srv := &http.Server{
 		Addr:              ":8080",
@@ -183,6 +187,49 @@ func withVectors(logger *slog.Logger) vectors.VectorStore {
 // 503 and the rest of the service works as before. The brokers are not
 // contacted here. The returned function flushes queued events and must run
 // after the HTTP server has stopped.
+// withAnalytics connects rerank=true on /api/v1/similar to ClickHouse when
+// CLICKHOUSE_URL is set. Without it, or with an invalid URL, rerank=true
+// answers with Qdrant's order and says why; the rest of the service works as
+// before. ClickHouse is not contacted here. An invalid RERANK_WEIGHT or
+// RERANK_SMOOTHING falls back to its default with a warning, like the
+// duration variables do.
+func withAnalytics(logger *slog.Logger) (analytics.TransitionStats, analytics.RerankConfig) {
+	cfg := analytics.DefaultRerankConfig()
+	var err error
+	if cfg.Weight, err = analytics.ParseWeight(os.Getenv("RERANK_WEIGHT")); err != nil {
+		logger.Warn("ignoring invalid rerank weight, using default", "error", err.Error(), "default", analytics.DefaultWeight)
+		cfg.Weight = analytics.DefaultWeight
+	}
+	if cfg.Smoothing, err = analytics.ParseSmoothing(os.Getenv("RERANK_SMOOTHING")); err != nil {
+		logger.Warn("ignoring invalid rerank smoothing, using default", "error", err.Error(), "default", analytics.DefaultSmoothing)
+		cfg.Smoothing = analytics.DefaultSmoothing
+	}
+
+	chURL := os.Getenv("CLICKHOUSE_URL")
+	if chURL == "" {
+		logger.Info("rerank disabled: CLICKHOUSE_URL is not set")
+		return nil, cfg
+	}
+	database := os.Getenv("CLICKHOUSE_DATABASE")
+	if database == "" {
+		database = analytics.DefaultDatabase
+	}
+	timeout := durationEnv(logger, "CLICKHOUSE_TIMEOUT", analytics.DefaultTimeout)
+
+	store, err := analytics.NewClickHouse(chURL,
+		analytics.WithCredentials(os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD")),
+		analytics.WithDatabase(database),
+		analytics.WithTimeout(timeout),
+	)
+	if err != nil {
+		logger.Warn("rerank disabled: invalid CLICKHOUSE_URL", "error", err.Error())
+		return nil, cfg
+	}
+	logger.Info("rerank enabled", "database", database, "timeout", timeout.String(),
+		"weight", cfg.Weight, "smoothing", cfg.Smoothing)
+	return store, cfg
+}
+
 func withEvents(logger *slog.Logger) (events.Publisher, func()) {
 	noop := func() {}
 

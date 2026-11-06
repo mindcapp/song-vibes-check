@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mindcapp/song-vibes-check/internal/analytics"
 	"github.com/mindcapp/song-vibes-check/internal/events"
 	"github.com/mindcapp/song-vibes-check/internal/provider"
 	"github.com/mindcapp/song-vibes-check/internal/similarity"
@@ -33,6 +34,10 @@ type Handlers struct {
 	vectors vectors.VectorStore
 	// events receives listening events; nil when not configured.
 	events events.Publisher
+	// stats and rerank serve rerank=true on /api/v1/similar; stats is nil
+	// when not configured.
+	stats  analytics.TransitionStats
+	rerank analytics.RerankConfig
 }
 
 // NewHandlers builds the handlers. timeout bounds how long POST /compare may
