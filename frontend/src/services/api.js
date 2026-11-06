@@ -120,6 +120,14 @@ export function getSimilar(trackId, { limit = 10, rerank = false, excludeSameArt
   return request(`${VIBE_API_BASE}/api/v1/similar?${params}`, { signal })
 }
 
+// getTrack returns { track_id, title, artist, genre, x, y } for one track.
+// The API has no single-track endpoint, so it asks /api/v1/similar for one
+// neighbour and keeps the source track from the answer.
+export async function getTrack(trackId, { signal } = {}) {
+  const body = await getSimilar(trackId, { limit: 1, signal })
+  return body.track
+}
+
 // sendEvent posts one listening event and never throws: analytics must not
 // break the page. keepalive lets the request finish while the tab closes.
 export async function sendEvent(event, { keepalive = false } = {}) {
