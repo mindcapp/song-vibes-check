@@ -1,5 +1,11 @@
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
+
+// NavLink marks the current page with aria-current="page"; it is also shown.
+const navClass = ({ isActive }) =>
+  isActive
+    ? 'font-medium text-slate-900 dark:text-white'
+    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
 
 export default function Header() {
   const { isLoggedIn, userEmail, logout } = useAuth()
@@ -17,13 +23,16 @@ export default function Header() {
           🎧 Music Intelligence
         </Link>
 
-        <nav className="flex items-center gap-4 text-sm">
-          <Link to="/" className="text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">
+        <nav aria-label="Main" className="flex items-center gap-4 text-sm">
+          <NavLink to="/" end className={navClass}>
+            Map
+          </NavLink>
+          <NavLink to="/compare" className={navClass}>
             Compare
-          </Link>
-          <Link to="/similar" className="text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">
+          </NavLink>
+          <NavLink to="/similar" className={navClass}>
             Similar
-          </Link>
+          </NavLink>
 
           {isLoggedIn ? (
             <>

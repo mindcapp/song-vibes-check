@@ -6,6 +6,7 @@ import Login from './pages/Login'
 import Profile from './pages/Profile'
 import History from './pages/History'
 import Similar from './pages/Similar'
+import MapPage from './pages/MapPage'
 import { AuthProvider } from './hooks/useAuth'
 import { ToastProvider } from './hooks/useToast'
 
@@ -17,7 +18,8 @@ export default function App() {
           <Header />
           <main>
             <Routes>
-              <Route path="/" element={<Home />} />
+              <Route path="/" element={<MapPage />} />
+              <Route path="/compare" element={<Home />} />
               <Route path="/similar" element={<Similar />} />
               <Route path="/login" element={<Login />} />
               <Route
