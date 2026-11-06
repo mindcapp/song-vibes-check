@@ -65,6 +65,12 @@ export function centerOn(view, x, y, width, height, minScale = 0) {
   return { scale, tx: width / 2 - x * scale, ty: height / 2 + y * scale }
 }
 
+// isOnScreen reports whether a dot of radius r centred at (sx, sy) touches the
+// width x height canvas; the map skips drawing dots that do not.
+export function isOnScreen(sx, sy, r, width, height) {
+  return sx >= -r && sy >= -r && sx <= width + r && sy <= height + r
+}
+
 // visibleWorldRect is the part of the world on screen, for culling.
 export function visibleWorldRect(view, width, height) {
   const a = screenToWorld(view, 0, 0)

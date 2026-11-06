@@ -1,5 +1,6 @@
 // Run with: npm test
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { createFrameScheduler } from './frameScheduler.js'
 import { GENRES, genreColor, genreIndex } from './genres.js'
@@ -10,6 +11,7 @@ import {
   centerOn,
   computeBounds,
   fitView,
+  isOnScreen,
   panBy,
   screenToWorld,
   visibleWorldRect,
@@ -214,4 +216,30 @@ test('frame scheduler can request again after cancel (StrictMode mount, unmount,
   assert.equal(frames.size, 1)
   frames.flush()
   assert.equal(draws, 1)
+})
+
+const realPoints = parsePoints(
+  JSON.parse(readFileSync(new URL('../../public/points.json', import.meta.url), 'utf8')),
+)
+
+test('initial view of the real points.json puts every point on screen', () => {
+  assert.equal(realPoints.count, 8000)
+  const bounds = computeBounds(realPoints.xs, realPoints.ys)
+  for (const [w, h] of [[864, 638], [390, 450], [1600, 400]]) {
+    const view = fitView(bounds, w, h)
+    let onScreen = 0
+    for (let i = 0; i < realPoints.count; i++) {
+      const s = worldToScreen(view, realPoints.xs[i], realPoints.ys[i])
+      if (isOnScreen(s.x, s.y, 2, w, h)) onScreen++
+    }
+    assert.equal(onScreen, 8000, `${w}x${h}`)
+  }
+})
+
+test('isOnScreen keeps dots overlapping an edge and drops the ones outside', () => {
+  assert.equal(isOnScreen(0, 0, 2, 100, 50), true)
+  assert.equal(isOnScreen(-1.5, 25, 2, 100, 50), true) // half visible
+  assert.equal(isOnScreen(101, 51, 2, 100, 50), true)
+  assert.equal(isOnScreen(-3, 25, 2, 100, 50), false)
+  assert.equal(isOnScreen(50, 53, 2, 100, 50), false)
 })

@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { GENRES, genreColor } from '../../map/genres'
 import { createFrameScheduler } from '../../map/frameScheduler'
-import { centerOn, fitView, panBy, worldToScreen, screenToWorld, zoomAt } from '../../map/viewport'
+import { centerOn, fitView, isOnScreen, panBy, worldToScreen, screenToWorld, zoomAt } from '../../map/viewport'
 
 const HIT_RADIUS_PX = 12 // hover/click target: 24 px across, however small the dot
 const DRAG_THRESHOLD_PX = 4 // less movement than this between down and up is a click
@@ -103,7 +103,7 @@ const MapCanvas = forwardRef(function MapCanvas(props, ref) {
         const i = members[k]
         const sx = view.tx + xs[i] * view.scale
         const sy = view.ty - ys[i] * view.scale
-        if (sx < -r || sy < -r || sx > w + r || sy > h + r) continue
+        if (!isOnScreen(sx, sy, r, w, h)) continue
         ctx.moveTo(sx + r, sy)
         ctx.arc(sx, sy, r, 0, TAU)
       }
