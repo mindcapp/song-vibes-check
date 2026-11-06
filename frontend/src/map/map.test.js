@@ -1,6 +1,7 @@
 // Run with: npm test
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { createFrameScheduler } from './frameScheduler.js'
 import { GENRES, genreColor, genreIndex } from './genres.js'
 import { parsePoints } from './points.js'
 import { createGridIndex } from './spatialIndex.js'
@@ -163,4 +164,54 @@ test('track cache keeps the most recently used entries', () => {
   assert.equal(cache.get(1), 'a')
   assert.equal(cache.get(3), 'c')
   assert.equal(cache.size, 2)
+})
+
+// --- regression: the map was never drawn in development ---------------------
+
+
+function fakeFrames() {
+  let next = 1
+  const queued = new Map()
+  return {
+    raf: (fn) => {
+      queued.set(next, fn)
+      return next++
+    },
+    caf: (id) => queued.delete(id),
+    flush: () => {
+      const fns = [...queued.values()]
+      queued.clear()
+      fns.forEach((fn) => fn())
+    },
+    get size() {
+      return queued.size
+    },
+  }
+}
+
+test('frame scheduler coalesces requests into one frame', () => {
+  const frames = fakeFrames()
+  let draws = 0
+  const s = createFrameScheduler(() => draws++, frames.raf, frames.caf)
+  s.request()
+  s.request()
+  assert.equal(frames.size, 1)
+  frames.flush()
+  assert.equal(draws, 1)
+  s.request() // a new request after the frame ran is scheduled again
+  frames.flush()
+  assert.equal(draws, 2)
+})
+
+test('frame scheduler can request again after cancel (StrictMode mount, unmount, remount)', () => {
+  const frames = fakeFrames()
+  let draws = 0
+  const s = createFrameScheduler(() => draws++, frames.raf, frames.caf)
+  s.request() // first mount
+  s.cancel() // StrictMode's simulated unmount
+  assert.equal(s.pending, false)
+  s.request() // remount: this request used to be ignored
+  assert.equal(frames.size, 1)
+  frames.flush()
+  assert.equal(draws, 1)
 })

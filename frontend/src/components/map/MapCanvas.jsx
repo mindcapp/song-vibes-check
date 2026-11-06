@@ -1,5 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { GENRES, genreColor } from '../../map/genres'
+import { createFrameScheduler } from '../../map/frameScheduler'
 import { centerOn, fitView, panBy, worldToScreen, screenToWorld, zoomAt } from '../../map/viewport'
 
 const HIT_RADIUS_PX = 12 // hover/click target: 24 px across, however small the dot
@@ -48,7 +49,12 @@ const MapCanvas = forwardRef(function MapCanvas(props, ref) {
   const sizeRef = useRef({ w: 0, h: 0 })
   const viewRef = useRef(null)
   const fitScaleRef = useRef(1)
-  const frameRef = useRef(0)
+  const drawRef = useRef(null)
+  const schedulerRef = useRef(null)
+  if (schedulerRef.current === null) {
+    // stable for the component's life; always calls the latest draw
+    schedulerRef.current = createFrameScheduler(() => drawRef.current?.())
+  }
   const pointersRef = useRef(new Map())
   const gestureRef = useRef(null)
   const hoverRef = useRef(-1) // hovered point index, drawn as a ring
@@ -65,7 +71,6 @@ const MapCanvas = forwardRef(function MapCanvas(props, ref) {
   }, [points])
 
   const draw = useCallback(() => {
-    frameRef.current = 0
     const canvas = canvasRef.current
     const view = viewRef.current
     const { w, h } = sizeRef.current
@@ -145,9 +150,9 @@ const MapCanvas = forwardRef(function MapCanvas(props, ref) {
     if (hovered >= 0) ring(hovered, r + 4)
   }, [byGenre])
 
-  const requestDraw = useCallback(() => {
-    if (!frameRef.current) frameRef.current = requestAnimationFrame(draw)
-  }, [draw])
+  drawRef.current = draw
+
+  const requestDraw = useCallback(() => schedulerRef.current.request(), [])
 
   const setView = useCallback(
     (next) => {
@@ -244,7 +249,7 @@ const MapCanvas = forwardRef(function MapCanvas(props, ref) {
     if (hoverRef.current >= 0 && hidden.has(points.genres[hoverRef.current])) updateHover(-1)
   }, [hidden, points, updateHover])
 
-  useEffect(() => () => cancelAnimationFrame(frameRef.current), [])
+  useEffect(() => () => schedulerRef.current.cancel(), [])
 
   // Wheel zoom needs a non-passive listener to stop the page from scrolling.
   useEffect(() => {
