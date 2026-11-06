@@ -182,7 +182,7 @@ export default function MapPage() {
 
   return (
     <div className="flex flex-col lg:h-[calc(100vh-4.0625rem)] lg:flex-row">
-      <section aria-label="Track map" className="flex min-w-0 flex-1 flex-col">
+      <section aria-label="Track map" className="flex min-w-0 flex-col lg:flex-1">
         <div className="space-y-3 border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
           <div className="max-w-md">
             <TrackSearch
@@ -203,7 +203,8 @@ export default function MapPage() {
           )}
         </div>
 
-        <div className="relative h-[60vh] flex-1 bg-slate-50 dark:bg-slate-900 lg:h-auto">
+        {/* flex-1 only side by side: in the phone column it would override h-[60vh] */}
+        <div className="relative h-[60vh] bg-slate-50 dark:bg-slate-900 lg:h-auto lg:flex-1">
           {status === 'loading' && (
             <p role="status" className="absolute inset-0 flex items-center justify-center text-sm text-slate-500 dark:text-slate-400">
               Loading the map…
